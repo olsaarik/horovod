@@ -18,7 +18,6 @@
 #define HOROVOD_MSALLREDUCE_OPERATIONS_H
 
 #include <iostream>
-#include <omp.h>
 
 #include "mpi.h"
 

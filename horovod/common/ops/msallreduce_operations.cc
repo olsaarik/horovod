@@ -264,9 +264,6 @@ void MsAllreduceOp::MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, i
 template<typename T, typename TACC>
 void MsAllreduceOp::PairwiseReduce_Internal(T* left_tensor, T* right_tensor, int buffer_length, int* layer_sizes, int num_layers){
     LOG(INFO, global_state_->rank)<<"Starting pairwise reduction internal";
-    //TODO make this multi-threaded
-    int nt = omp_get_max_threads();
-    //int nt = 1;
     
     // Get number of elements
     int count = buffer_length/sizeof(T);
@@ -281,16 +278,11 @@ void MsAllreduceOp::PairwiseReduce_Internal(T* left_tensor, T* right_tensor, int
     std::vector<TACC> norms(num_layers*cache_alignment, (TACC)0);
     std::vector<TACC> dotProducts(num_layers*cache_alignment, (TACC)0);
 
-    // reduction is parallelized uniformly across available OpenMP threads
-#pragma omp parallel num_threads(nt)
-    {
-        int tid = omp_get_thread_num();
-        int numThreads = omp_get_num_threads();
-        int myStart = (count * tid) / numThreads;
-        int myEnd = (count * (tid + 1)) / numThreads;
+    int myStart = 0;
+    int myEnd = count;
 
-        // go over each layer and process the layer only if it overlaps with [myStart, myEnd)
-        for (int i = 0, layer_begin = 0; i < num_layers; layer_begin += layer_sizes[i++]) {
+    // go over each layer and process the layer only if it overlaps with [myStart, myEnd)
+    for (int i = 0, layer_begin = 0; i < num_layers; layer_begin += layer_sizes[i++]) {
             int layer_end = layer_begin + layer_sizes[i];
 
             if (myEnd <= layer_begin)
@@ -306,15 +298,10 @@ void MsAllreduceOp::PairwiseReduce_Internal(T* left_tensor, T* right_tensor, int
             TACC locDotProduct = 0.f;
             TACC locNorm = 0.f;
             ComputeDotAndNormSqrd(&left_tensor[begin], &right_tensor[begin], end - begin, locDotProduct, locNorm);
-#pragma omp critical
-            {
-                // multiplied by cache_alignment to avoid false sharing
-                dotProducts[i * cache_alignment] += locDotProduct;
-                norms[i * cache_alignment] += locNorm;
-            }
+            // multiplied by cache_alignment to avoid false sharing
+            dotProducts[i * cache_alignment] += locDotProduct;
+            norms[i * cache_alignment] += locNorm;
         }
-#pragma omp barrier
-
         // go over each layer and process the layer only if it overlaps with [myStart, myEnd)
         for (int i = 0, layer_begin = 0; i < num_layers; layer_begin += layer_sizes[i++]) {
             int layer_end = layer_begin + layer_sizes[i];
@@ -342,7 +329,6 @@ void MsAllreduceOp::PairwiseReduce_Internal(T* left_tensor, T* right_tensor, int
             // where coeff = 1 - a.b/normbsq
             TAXPY(end - begin, coeff, &right_tensor[begin], &left_tensor[begin]);
         }
-    }
 }
 
 template<typename T, typename TACC>
