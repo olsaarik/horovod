@@ -84,7 +84,7 @@ def allreduce(tensor, average=True, device_dense='', device_sparse='',
             num_threads = os.environ['HOROVOD_NUMBER_OF_MPI_THREADS']
             has_threads = True if num_threads is not None and  int(num_threads) >=1 else False
             new_tensor = (tf.div(summed_tensor, horovod_size)
-                          if average and not use_msallreduce and not has_threads else summed_tensor)
+                          if average and (not use_msallreduce or not has_threads) else summed_tensor)
         return new_tensor
 
 
