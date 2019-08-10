@@ -16,6 +16,7 @@
 
 #include "msallreduce_operations.h"
 #include <boost/asio/post.hpp>
+#include "msmpi.h"
 
 namespace horovod {
 namespace common {
@@ -231,7 +232,8 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     double bnormsq = 0.f;
     ComputeDotAndNormSqrds(a, b, count, dotProduct, anormsq, bnormsq);
 
-    double reduce_vals[3];
+    double reduce_vals[3], tmp_buffer[3];
+    
     if (isLeftNeighbor) { 
         reduce_vals[0] = anormsq;
         reduce_vals[1] = bnormsq;
@@ -240,8 +242,10 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
         reduce_vals[0] = bnormsq;
     }
     reduce_vals[2] = dotProduct;
-    // TODO replace this with something else
-    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
+
+    // note unlike MPI_Allreduce, result is stored in
+    // reduce_vals instead of recv
+    MSMPI_Allreduce(reduce_vals, tmp_buffer, 3, comm, message_tag);
 
     if (isLeftNeighbor) { 
         anormsq = reduce_vals[0];
@@ -364,17 +368,17 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
             recvOffset = nghrCount;
         }
         for (int i = 0; i < std::max(nghrCount, myCount); i += chunk_size) {
-            MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+            MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator, MPI_STATUS_IGNORE);
         }
         ScaledAdd(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset]);
 
         if (rank < nearest_power_2) {
             for (int i = 0; i < nghrCount; i += chunk_size) {
-                MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator, MPI_STATUS_IGNORE);
             }
         } else {
             for (int i = 0; i < myCount; i += chunk_size)
-                MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator);
+                MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator);
         }
     }
 
@@ -402,7 +406,7 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
                 recvOffset = 0;
             }
             for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
-                MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator, MPI_STATUS_IGNORE);
             if ((rank & level) != 0) {
                 grad_buffer = &grad_buffer[nghrCount];
                 recv_buffer = &recv_buffer[nghrCount];
@@ -434,7 +438,7 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
                     recv_buffer = &grad_buffer[-nghrCount];
                 }
                 for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
-                    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator, MPI_STATUS_IGNORE);
                 if ((rank & level) != 0) {
                     grad_buffer = &grad_buffer[-nghrCount];
                 }
@@ -449,12 +453,12 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
         if (rank < nearest_power_2) {
             neighbor_rank = rank + remaining_non_power_2;
             for (int i = 0; i < count; i += chunk_size) {
-                MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator);
+                MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator);
             }
         } else {
             neighbor_rank = rank - remaining_non_power_2;
             for (int i = 0; i < count; i += chunk_size)
-                MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, message_tag, communicator, MPI_STATUS_IGNORE);
         }
     }
 
