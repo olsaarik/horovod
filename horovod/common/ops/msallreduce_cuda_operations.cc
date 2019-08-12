@@ -120,29 +120,6 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
 
       LOG(INFO, global_state_->rank)<<"Begin processing gpu tensor in layer "<<layerid;
       switch (entry.output->dtype()) {
-          case HOROVOD_INT8:
-          //TODO new parasail
-            MsAllreduce_Internal((int8_t*) buffer_data,
-                            (int8_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<int8_t>,
-                            ScaleAddImpl<int8_t>);  
-          break;     
-          case HOROVOD_UINT8:
-          //TODO new parasail
-            MsAllreduce_Internal((uint8_t*) buffer_data,
-                            (uint8_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<uint8_t>,
-                            ScaleAddImpl<uint8_t>);  
-          break;
-          case HOROVOD_FLOAT16:
           //TODO new parasail
             MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
                             (MsAllreduceOp::float16*) recv_buffer,
@@ -152,50 +129,6 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
                             entry,
                             DotProductImpl<MsAllreduceOp::float16>,
                             ScaleAddImpl<MsAllreduceOp::float16>);  
-          break;
-          case HOROVOD_UINT16:
-          //TODO new parasail
-            MsAllreduce_Internal((uint16_t*) buffer_data,
-                            (uint16_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<uint16_t>,
-                            ScaleAddImpl<uint16_t>);  
-          break;
-          case HOROVOD_INT16:
-          //TODO new parasail
-            MsAllreduce_Internal((int16_t*) buffer_data,
-                            (int16_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<int16_t>,
-                            ScaleAddImpl<int16_t>);  
-          break;
-          case HOROVOD_INT32:
-          //TODO new parasail
-            MsAllreduce_Internal((int32_t*) buffer_data,
-                            (int32_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<int32_t>,
-                            ScaleAddImpl<int32_t>);  
-          break;
-          case HOROVOD_INT64:
-          //TODO new parasail
-            MsAllreduce_Internal((int64_t*) buffer_data,
-                            (int64_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            DotProductImpl<int64_t>,
-                            ScaleAddImpl<int64_t>);  
           break;
           case HOROVOD_FLOAT32:
           //TODO new parasail
@@ -267,10 +200,10 @@ void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __rest
   auto adotbstatus = cublasDotEx(handle, n, (float *)a, CUDA_R_32F, 1, (float *)b, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
   CublasContext::ErrorCheck("a cublasdot b", adotbstatus);
   
-  auto adotastatus = cublasDotEx(handle, n, (float *)a, CUDA_R_32F, 1, (float *)a, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
+  auto adotastatus = cublasDotEx(handle, n, (float *)a, CUDA_R_32F, 1, (float *)a, CUDA_R_32F, 1, &anormsq, CUDA_R_32F, CUDA_R_32F);
   CublasContext::ErrorCheck("a cublasdot a", adotastatus);
 
-  auto bdotbstatus = cublasDotEx(handle, n, (float *)b, CUDA_R_32F, 1, (float *)b, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
+  auto bdotbstatus = cublasDotEx(handle, n, (float *)b, CUDA_R_32F, 1, (float *)b, CUDA_R_32F, 1, &bnormsq, CUDA_R_32F, CUDA_R_32F);
   CublasContext::ErrorCheck("b cublasdot b", bdotbstatus);
 }
 

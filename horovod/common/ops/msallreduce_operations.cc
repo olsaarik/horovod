@@ -32,6 +32,7 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
   int layerid = 0;
   int num_reductions = entries.size();
   LOG(INFO, global_state_->rank)<<"Ready to process "<<num_reductions<<" tensors";
+  global_state_->finished_parallel_reductions = 0;
   for (auto& entry : entries) {
     boost::asio::post(*global_state_->background_thread_pool,
     [&return_statuses, this, &entry, response, layerid, &entries]
@@ -81,28 +82,6 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
 
       LOG(INFO, global_state_->rank)<<"Begin processing tensor in layer "<<layerid;
       switch (entry.output->dtype()) {
-          case HOROVOD_INT8:
-          //TODO new parasail
-            MsAllreduce_Internal((int8_t*) buffer_data,
-                            (int8_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<int8_t>,
-                            ScaledAdd<int8_t>);  
-          break;     
-          case HOROVOD_UINT8:
-          //TODO new parasail
-            MsAllreduce_Internal((uint8_t*) buffer_data,
-                            (uint8_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<uint8_t>,
-                            ScaledAdd<uint8_t>);  
-          break;
           case HOROVOD_FLOAT16:
           //TODO new parasail
             MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
@@ -113,50 +92,6 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
                             entry,
                             ComputeDotAndNormSqrdsfp16,
                             ScaledAddfp16);  
-          break;
-          case HOROVOD_UINT16:
-          //TODO new parasail
-            MsAllreduce_Internal((uint16_t*) buffer_data,
-                            (uint16_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<uint16_t>,
-                            ScaledAdd<uint16_t>);  
-          break;
-          case HOROVOD_INT16:
-          //TODO new parasail
-            MsAllreduce_Internal((int16_t*) buffer_data,
-                            (int16_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<int16_t>,
-                            ScaledAdd<int16_t>);  
-          break;
-          case HOROVOD_INT32:
-          //TODO new parasail
-            MsAllreduce_Internal((int32_t*) buffer_data,
-                            (int32_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<int32_t>,
-                            ScaledAdd<int32_t>);  
-          break;
-          case HOROVOD_INT64:
-          //TODO new parasail
-            MsAllreduce_Internal((int64_t*) buffer_data,
-                            (int64_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<int64_t>,
-                            ScaledAdd<int64_t>);  
           break;
           case HOROVOD_FLOAT32:
           //TODO new parasail
@@ -199,11 +134,9 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
     });
     layerid++;
   }
-  while (global_state_->finished_parallel_reductions < num_reductions) {
+  while (global_state_->finished_parallel_reductions.load() < num_reductions) {
     std::this_thread::sleep_for(std::chrono::nanoseconds(50));
   }
-  global_state_->finished_parallel_reductions = 0;
-
   return Status::OK();
 }
 

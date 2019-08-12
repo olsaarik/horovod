@@ -100,7 +100,6 @@ struct HorovodGlobalState {
         temp_buffers.emplace();
       }
       background_thread_pool = &pool;
-      finished_parallel_reductions = 0;
     }
   }
   
