@@ -259,7 +259,7 @@ void MsCudaAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src
     LOG(INFO, global_state_->rank)<<"memcpyUtil GPU OK.";
 }
 
-//TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
+//TODO CRITICAL! only targetting float32
 template<typename T>
 void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
   cublasHandle_t handle = getCublasThreadState().cublasHandle;
@@ -274,7 +274,7 @@ void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __rest
   CublasContext::ErrorCheck("b cublasdot b", bdotbstatus);
 }
 
-//TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
+//TODO CRITICAL! only targetting float32
 template<typename T>
 void MsCudaAllreduceOp::ScaleAddImpl(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
   cublasHandle_t handle = getCublasThreadState().cublasHandle;
