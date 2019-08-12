@@ -302,7 +302,7 @@ void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buf
 }
 
 template<typename T>
-void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
     dotProduct = 0.;
     anormsq = 0.;
     bnormsq = 0.;
@@ -317,7 +317,7 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
 }
 
 template<typename T>
-void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
     for (int i = 0; i < n; i++) {
         a[i] = acoeff * a[i] + bcoeff * b[i];
     }
@@ -325,13 +325,13 @@ void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bc
 
 template<typename T, typename F, typename S>
 void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
-    double dotProduct = 0.f;
-    double anormsq = 0.f;
-    double bnormsq = 0.f;
+    float dotProduct = 0.;
+    float anormsq = 0.;
+    float bnormsq = 0.;
     LOG(INFO, global_state_->rank)<<"Computing dot product.";
     dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_);
     LOG(INFO, global_state_->rank)<<"Computed dot product.";
-    double reduce_vals[3];
+    float reduce_vals[3];
     if (isLeftNeighbor) { 
         reduce_vals[0] = anormsq;
         reduce_vals[1] = bnormsq;
@@ -341,7 +341,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     }
     reduce_vals[2] = dotProduct;
     // TODO replace this with something else
-    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_FLOAT, MPI_SUM, comm);
     LOG(INFO, global_state_->rank)<<"Performed mpi allreduce.";
 
     if (isLeftNeighbor) { 
@@ -353,8 +353,8 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     }
     dotProduct = reduce_vals[2];
 
-    double acoeff = 1;
-    double bcoeff = 1;
+    float acoeff = 1;
+    float bcoeff = 1;
     if (anormsq != 0)
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
     if (bnormsq != 0)

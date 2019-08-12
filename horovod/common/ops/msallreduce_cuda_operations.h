@@ -66,10 +66,10 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
   void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) override;
 
   template<typename T>
-  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);
+  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state);
   
   template<typename T>
-  void static ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaleAddImpl(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
 };
 } // namespace common
 } // namespace horovod

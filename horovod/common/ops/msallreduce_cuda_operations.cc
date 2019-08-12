@@ -261,28 +261,28 @@ void MsCudaAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src
 
 //TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
 template<typename T>
-void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
   cublasHandle_t handle = getCublasThreadState().cublasHandle;
   
-  auto adotbstatus = cublasDdot(handle, n, (double *)a, 1, (double *)b, 1, &dotProduct);
-  CublasContext::ErrorCheck("a cublasDdot b", adotbstatus);
+  auto adotbstatus = cublasDotEx(handle, n, (float *)a, CUDA_R_32F, 1, (float *)b, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
+  CublasContext::ErrorCheck("a cublasdot b", adotbstatus);
   
-  auto adotastatus = cublasDdot(handle, n, (double *)a, 1, (double *)a, 1, &anormsq);
-  CublasContext::ErrorCheck("a cublasDdot a", adotastatus);
+  auto adotastatus = cublasDotEx(handle, n, (float *)a, CUDA_R_32F, 1, (float *)a, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
+  CublasContext::ErrorCheck("a cublasdot a", adotastatus);
 
-  auto bdotbstatus = cublasDdot(handle, n, (double *)b, 1, (double *)b, 1, &bnormsq);
-  CublasContext::ErrorCheck("b cublasDdot b", bdotbstatus);
+  auto bdotbstatus = cublasDotEx(handle, n, (float *)b, CUDA_R_32F, 1, (float *)b, CUDA_R_32F, 1, &dotProduct, CUDA_R_32F, CUDA_R_32F);
+  CublasContext::ErrorCheck("b cublasdot b", bdotbstatus);
 }
 
 //TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
 template<typename T>
-void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
+void MsCudaAllreduceOp::ScaleAddImpl(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
   cublasHandle_t handle = getCublasThreadState().cublasHandle;
   
-  auto scaleStatus = cublasDscal(handle, n, &acoeff, (double *)a, 1);
+  auto scaleStatus = cublasScalEx(handle, n, &acoeff, CUDA_R_32F, (float *)a, CUDA_R_32F, 1, CUDA_R_32F);
   CublasContext::ErrorCheck("cublasDscal", scaleStatus);
   
-  auto axpyStatus = cublasDaxpy(handle, n, &bcoeff, (double *)b, 1, (double *)a, 1);
+  auto axpyStatus = cublasAxpyEx(handle, n, &bcoeff, CUDA_R_32F, (float *)b, CUDA_R_32F, 1, (float *)a, CUDA_R_32F, 1, CUDA_R_32F);
   CublasContext::ErrorCheck("cublasDaxpy", axpyStatus);
 }
 

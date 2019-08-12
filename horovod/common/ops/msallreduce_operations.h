@@ -66,16 +66,16 @@ protected:
   void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
   
   template<typename T, typename F, typename S>
   void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);  
+  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrdsfp16(const float16* __restrict__ a, const float16* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+  inline void static ComputeDotAndNormSqrdsfp16(const float16* __restrict__ a, const float16* __restrict__ b, int len, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -114,7 +114,7 @@ protected:
       bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void static ScaledAddfp16(int len, double acoeff, float16* __restrict__ a, double bcoeff, float16* __restrict__ b, HorovodGlobalState *global_state) {
+  inline void static ScaledAddfp16(int len, float acoeff, float16* __restrict__ a, float bcoeff, float16* __restrict__ b, HorovodGlobalState *global_state) {
       int i;
       __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
       __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
