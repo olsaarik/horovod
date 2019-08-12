@@ -52,30 +52,30 @@ protected:
   FusionBufferManager buffer_manager;
 
   // TODO fix this API
-  template<typename T, typename F>
-  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc);
+  template<typename T, typename F, typename S>
+  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
   
   // TODO new parasail begin  
-  template<typename T, typename F>
-  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc);
+  template<typename T, typename F, typename S>
+  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
   
   template <typename T>
   void SyncLocalBroadcast(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag);
 
-  template<typename T, typename F>
-  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc);
+  template<typename T, typename F, typename S>
+  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b);
+  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
   
-  template<typename T, typename F>
-  void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc);
+  template<typename T, typename F, typename S>
+  void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState global_state);  
+  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrds(const float16* __restrict__ a, const float16* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+  inline void static ComputeDotAndNormSqrdsfp16(const float16* __restrict__ a, const float16* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -114,7 +114,7 @@ protected:
       bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void ScaledAdd(int len, double acoeff, float16* __restrict__ a, double bcoeff, float16* __restrict__ b) {
+  inline void static ScaledAddfp16(int len, double acoeff, float16* __restrict__ a, double bcoeff, float16* __restrict__ b, HorovodGlobalState *global_state) {
       int i;
       __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
       __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
@@ -141,7 +141,7 @@ protected:
 
 private:
   // reduces 8xfloat32 into one scalar
-  inline float _mm256Reduction(__m256 x) {
+  inline float static  _mm256Reduction(__m256 x) {
       const __m128 x128 = _mm_add_ps(_mm256_extractf128_ps(x, 1), _mm256_castps256_ps128(x));
       const __m128 x64 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
       const __m128 x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
@@ -149,7 +149,7 @@ private:
   }
 
   // reduce 4xfloat64 into one double
-  inline double _mm256Reduction_pd(__m256d v) {
+  inline double static _mm256Reduction_pd(__m256d v) {
     __m128d vlow  = _mm256_castpd256_pd128(v);
     __m128d vhigh = _mm256_extractf128_pd(v, 1); // high 128
     vlow  = _mm_add_pd(vlow, vhigh);     // reduce down to 128
@@ -159,19 +159,19 @@ private:
   }
 
   // load 8 float16s from a and return the __m256 register
-  inline __m256 _mm_loadu_ph(const float16* a) {
+  inline __m256 static _mm_loadu_ph(const float16* a) {
       __m128i r = _mm_loadu_si128((__m128i*)(a));
       return _mm256_cvtph_ps(r);
   }
 
   // store 8 float16 from val into a 
-  inline void _mm_store_ph(float16* a, __m256 val) {
+  inline void static _mm_store_ph(float16* a, __m256 val) {
       __m128i r = _mm256_cvtps_ph(val, 0);
       _mm_storeu_si128((__m128i*)a, r);
   }
 
   // load len (< 8) float16s from a, fill the rest with 0s, and return the __m256 register
-  inline __m256 _mm_loadu_ph_partial(const float16* a, int len) {
+  inline __m256 static _mm_loadu_ph_partial(const float16* a, int len) {
       short e[8];
       std::memset(e, 0, sizeof(e));
       std::memcpy(e, a, std::min(len, 8) * sizeof(short));
@@ -180,7 +180,7 @@ private:
   }
 
   // store the first len (< 8) float16s from val and store into a
-  inline void _mm_store_ph_partial(float16* a, __m256 val, int len) {
+  inline void static _mm_store_ph_partial(float16* a, __m256 val, int len) {
       __m128i r = _mm256_cvtps_ph(val, 0);
       //for (int i = 0; i < std::min(len, 8); i++) 
       //    a[i].value = _mm_extract_epi16(r, i);

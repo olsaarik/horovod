@@ -30,6 +30,9 @@ class CublasContext {
 };
 
 struct CublasThreadState {
+
+    public:
+
     cublasHandle_t cublasHandle;
 
     CublasThreadState() {
@@ -58,10 +61,15 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
   protected:
   struct CUDAContext* cuda_context_;
 
+  CublasThreadState static getCublasThreadState();
+
   void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) override;
 
   template<typename T>
-  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState global_state);
+  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);
+  
+  template<typename T>
+  void static ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
 };
 } // namespace common
 } // namespace horovod

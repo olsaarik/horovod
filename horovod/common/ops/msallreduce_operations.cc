@@ -32,89 +32,169 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
   int layerid = 0;
   int num_reductions = entries.size();
   LOG(INFO, global_state_->rank)<<"Ready to process "<<num_reductions<<" tensors";
-  for (auto& e : entries) {
+  for (auto& entry : entries) {
     boost::asio::post(*global_state_->background_thread_pool,
-    [&return_statuses, this, &e, response, layerid, &entries]
+    [&return_statuses, this, &entry, response, layerid, &entries]
     {
+      void* buffer_data;
+      int buffer_len;
+      void* recv_buffer;
+
+      buffer_data = (void*) entry.tensor->data();
+
+      buffer_len = entry.output->size();
+
+      if(entry.tensor->data() == entry.output->data()) {
+          // Get the temp buffer to be used for the Op
+          global_state_->buffer_lock.lock();
+          assert(!global_state_->temp_buffers.empty());
+          buffer_manager = global_state_->temp_buffers.front();
+          global_state_->temp_buffers.pop();
+          global_state_->buffer_lock.unlock();
+
+          // TODO: Maybe add before and after callbacks to timeline?
+          Status status = buffer_manager.InitializeBuffer(
+              buffer_len,
+              entry.device, entry.context,
+              global_state_->current_nccl_stream,
+              [](){},
+              [](){},
+              [](int64_t& size, int64_t& threshold){return size >= threshold;});
+
+          if (!status.ok()) {
+              throw std::logic_error("MsAllreduceOp::Execute_helper: Initialize buffer failed.");
+              return;
+          }
+
+          auto& buffer = buffer_manager.GetBuffer(entry.device, entry.context->framework(), global_state_->current_nccl_stream);
+          recv_buffer = const_cast<void*>(buffer->AccessData(entry.context));
+      }
+      else {
+          recv_buffer = (void*) entry.output->data();
+      }
+      LOG(INFO, global_state_->rank)<<"Begin to process tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
+      
+      MPI_Comm* node_comm = NULL;
+      if (global_state_->rank_log_size != 0) {
+          node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
+      }
+
       LOG(INFO, global_state_->rank)<<"Begin processing tensor in layer "<<layerid;
       switch (entry.output->dtype()) {
           case HOROVOD_INT8:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<int8_t>);  
+            MsAllreduce_Internal((int8_t*) buffer_data,
+                            (int8_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<int8_t>,
+                            ScaledAdd<int8_t>);  
           break;     
           case HOROVOD_UINT8:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<uint8_t>);  
+            MsAllreduce_Internal((uint8_t*) buffer_data,
+                            (uint8_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<uint8_t>,
+                            ScaledAdd<uint8_t>);  
           break;
           case HOROVOD_FLOAT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<MsAllreduceOp::float16>);  
+            MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
+                            (MsAllreduceOp::float16*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrdsfp16,
+                            ScaledAddfp16);  
           break;
           case HOROVOD_UINT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<uint16_t>);  
+            MsAllreduce_Internal((uint16_t*) buffer_data,
+                            (uint16_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<uint16_t>,
+                            ScaledAdd<uint16_t>);  
           break;
           case HOROVOD_INT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<int16_t>);  
+            MsAllreduce_Internal((int16_t*) buffer_data,
+                            (int16_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<int16_t>,
+                            ScaledAdd<int16_t>);  
           break;
           case HOROVOD_INT32:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<int32_t>);  
+            MsAllreduce_Internal((int32_t*) buffer_data,
+                            (int32_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<int32_t>,
+                            ScaledAdd<int32_t>);  
           break;
           case HOROVOD_INT64:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<int64_t>);  
+            MsAllreduce_Internal((int64_t*) buffer_data,
+                            (int64_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<int64_t>,
+                            ScaledAdd<int64_t>);  
           break;
           case HOROVOD_FLOAT32:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<float>);  
+            MsAllreduce_Internal((float*) buffer_data,
+                            (float*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<float>,
+                            ScaledAdd<float>);  
           break;
           case HOROVOD_FLOAT64:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         ComputeDotAndNormSqrds<double>);  
+            MsAllreduce_Internal((double*) buffer_data,
+                            (double*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            ComputeDotAndNormSqrds<double>,
+                            ScaledAdd<double>);  
           
           break;
           default:
               throw std::logic_error("MsAllreduceOp::Execute: Unsupported data type.");
       }
       LOG(INFO, global_state_->rank)<<"Done processing tensor in layer "<<layerid;
+      if(entry.tensor->data() == entry.output->data()) {
+        // Return the buffer back into the pool of available buffers
+        global_state_->buffer_lock.lock();
+        global_state_->temp_buffers.push(buffer_manager);
+        global_state_->buffer_lock.unlock();
+      }
+
+  memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size());
+  LOG(INFO, global_state_->rank)<<"Finished ms allreduction, exiting operation";
+
       global_state_->finished_parallel_reductions++;
     });
     layerid++;
@@ -183,14 +263,13 @@ void MsAllreduceOp::Execute_helper(std::map<int, Status>& return_status,
 	node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
   }
 
-    MsAllreduce_Internal((T*) buffer_data,
-                    (T*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid,
-                    entry,
-                    dotProdFunc<T>);  
-
+//   MsAllreduce_Internal((T*) buffer_data,
+//                   (T*) recv_buffer,
+//                   buffer_len,
+//                   node_comm,
+//                   layerid,
+//                   entry,
+//                   dotProdFunc<T>);  
   if(entry.tensor->data() == entry.output->data()) {
     // Return the buffer back into the pool of available buffers
     global_state_->buffer_lock.lock();
@@ -209,21 +288,21 @@ bool MsAllreduceOp::Enabled(const ParameterManager& param_manager,
 }
 
 // TODO new parasail algo begin
-template<typename T, typename F>
-void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc) {
+template<typename T, typename F, typename S>
+void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc) {
   int count = buffer_length / sizeof(T);
   int local_rank = 0;
   MPI_Comm_rank(global_state_->local_comm, &local_rank);
-  SyncLocalReduce(grad_buffer, recv_buffer, count, global_state_->local_comm, message_tag, entry, dotProdFunc<T>);
+  SyncLocalReduce(grad_buffer, recv_buffer, count, global_state_->local_comm, message_tag, entry, dotProdFunc, scaleAddFunc);
   if (local_rank == 0 && node_comm != NULL) {
-    SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, message_tag, dotProdFunc<T>);
+    SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, message_tag, dotProdFunc, scaleAddFunc);
   }
   SyncLocalBroadcast(grad_buffer, recv_buffer, count, global_state_->local_comm, message_tag);
   
 }
 
 template<typename T>
-void static MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
     dotProduct = 0.;
     anormsq = 0.;
     bnormsq = 0.;
@@ -238,14 +317,14 @@ void static MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, cons
 }
 
 template<typename T>
-void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b) {
+void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
     for (int i = 0; i < n; i++) {
         a[i] = acoeff * a[i] + bcoeff * b[i];
     }
 }
 
-template<typename T, typename F>
-void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc) {
+template<typename T, typename F, typename S>
+void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
     double dotProduct = 0.f;
     double anormsq = 0.f;
     double bnormsq = 0.f;
@@ -282,7 +361,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
     // a = acoeff * a + bcoeff * b
-    ScaledAdd(count, acoeff, a, bcoeff, b);
+    scaleAddFunc(count, acoeff, a, bcoeff, b, global_state_);
     LOG(INFO, global_state_->rank)<<"Performed ScaledAdd.";
 }
 
@@ -305,8 +384,8 @@ void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, T *recv_buffer, int count
     }
 }
 
-template <typename T, typename F>
-void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc)
+template<typename T, typename F, typename S>
+void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc)
 {
     int rank;
     int size;
@@ -325,7 +404,7 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
     }
     MPI_Waitall(num_reqs, reqs, MPI_STATUS_IGNORE);
     for (int i = 1; i < size; i++){
-        PairwiseReduceWithComm(recv_buffer, &recv_buffer[count/size*i], count/size, message_tag, communicator, true, dotProdFunc);
+        PairwiseReduceWithComm(recv_buffer, &recv_buffer[count/size*i], count/size, message_tag, communicator, true, dotProdFunc, scaleAddFunc);
     }
     num_reqs = 0;
     if (rank == 0){
@@ -341,8 +420,8 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
     delete[] reqs;
 }
 
-template<typename T, typename F>
-void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc) {
+template<typename T, typename F, typename S>
+void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc, S scaleAddFunc ) {
     int rank;
     int size;
     MPI_Comm_rank(communicator, &rank);
@@ -378,7 +457,7 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
         for (int i = 0; i < std::max(nghrCount, myCount); i += chunk_size) {
             MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
         }
-        ScaledAdd(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset]);
+        scaleAddFunc(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset], global_state_);
 
         if (rank < nearest_power_2) {
             for (int i = 0; i < nghrCount; i += chunk_size) {
@@ -420,9 +499,9 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
                 recv_buffer = &recv_buffer[nghrCount];
             }
             if (level == 1) {
-                ScaledAdd(myCount, 0.5, grad_buffer , 0.5, recv_buffer);
+                scaleAddFunc(myCount, 0.5, grad_buffer , 0.5, recv_buffer, global_state_);
             } else {
-                PairwiseReduceWithComm(grad_buffer, recv_buffer, myCount, message_tag, reduction_comms[comm_index], (rank & level) == 0, dotProdFunc<T>);
+                PairwiseReduceWithComm(grad_buffer, recv_buffer, myCount, message_tag, reduction_comms[comm_index], (rank & level) == 0, dotProdFunc, scaleAddFunc);
             }
         }
 

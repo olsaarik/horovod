@@ -71,89 +71,169 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
   int layerid = 0;
   int num_reductions = entries.size();
   LOG(INFO, global_state_->rank)<<"Ready to process "<<num_reductions<<" tensors in gpu";
-  for (auto& e : entries) {
+  for (auto& entry : entries) {
     boost::asio::post(*global_state_->background_thread_pool,
-    [&return_statuses, this, &e, response, layerid, &entries]
+    [&return_statuses, this, &entry, response, layerid, &entries]
     {
+      void* buffer_data;
+      int buffer_len;
+      void* recv_buffer;
+
+      buffer_data = (void*) entry.tensor->data();
+
+      buffer_len = entry.output->size();
+
+      if(entry.tensor->data() == entry.output->data()) {
+          // Get the temp buffer to be used for the Op
+          global_state_->buffer_lock.lock();
+          assert(!global_state_->temp_buffers.empty());
+          buffer_manager = global_state_->temp_buffers.front();
+          global_state_->temp_buffers.pop();
+          global_state_->buffer_lock.unlock();
+
+          // TODO: Maybe add before and after callbacks to timeline?
+          Status status = buffer_manager.InitializeBuffer(
+              buffer_len,
+              entry.device, entry.context,
+              global_state_->current_nccl_stream,
+              [](){},
+              [](){},
+              [](int64_t& size, int64_t& threshold){return size >= threshold;});
+
+          if (!status.ok()) {
+              throw std::logic_error("MsAllreduceOp::Execute_helper: Initialize buffer failed.");
+              return;
+          }
+
+          auto& buffer = buffer_manager.GetBuffer(entry.device, entry.context->framework(), global_state_->current_nccl_stream);
+          recv_buffer = const_cast<void*>(buffer->AccessData(entry.context));
+      }
+      else {
+          recv_buffer = (void*) entry.output->data();
+      }
+      LOG(INFO, global_state_->rank)<<"Begin to process gpu tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
+      
+      MPI_Comm* node_comm = NULL;
+      if (global_state_->rank_log_size != 0) {
+          node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
+      }
+
       LOG(INFO, global_state_->rank)<<"Begin processing gpu tensor in layer "<<layerid;
       switch (entry.output->dtype()) {
           case HOROVOD_INT8:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<int8_t>);  
+            MsAllreduce_Internal((int8_t*) buffer_data,
+                            (int8_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<int8_t>,
+                            ScaleAddImpl<int8_t>);  
           break;     
           case HOROVOD_UINT8:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<uint8_t>);  
+            MsAllreduce_Internal((uint8_t*) buffer_data,
+                            (uint8_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<uint8_t>,
+                            ScaleAddImpl<uint8_t>);  
           break;
           case HOROVOD_FLOAT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<MsAllreduceOp::float16>);  
+            MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
+                            (MsAllreduceOp::float16*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<MsAllreduceOp::float16>,
+                            ScaleAddImpl<MsAllreduceOp::float16>);  
           break;
           case HOROVOD_UINT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<uint16_t>);  
+            MsAllreduce_Internal((uint16_t*) buffer_data,
+                            (uint16_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<uint16_t>,
+                            ScaleAddImpl<uint16_t>);  
           break;
           case HOROVOD_INT16:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<int16_t>);  
+            MsAllreduce_Internal((int16_t*) buffer_data,
+                            (int16_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<int16_t>,
+                            ScaleAddImpl<int16_t>);  
           break;
           case HOROVOD_INT32:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<int32_t>);  
+            MsAllreduce_Internal((int32_t*) buffer_data,
+                            (int32_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<int32_t>,
+                            ScaleAddImpl<int32_t>);  
           break;
           case HOROVOD_INT64:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<int64_t>);  
+            MsAllreduce_Internal((int64_t*) buffer_data,
+                            (int64_t*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<int64_t>,
+                            ScaleAddImpl<int64_t>);  
           break;
           case HOROVOD_FLOAT32:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<float>);  
+            MsAllreduce_Internal((float*) buffer_data,
+                            (float*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<float>,
+                            ScaleAddImpl<float>);  
           break;
           case HOROVOD_FLOAT64:
           //TODO new parasail
-          Execute_helper(return_statuses,
-                         e,
-                         response,
-                         layerid,
-                         DotProductImpl<double>);  
+            MsAllreduce_Internal((double*) buffer_data,
+                            (double*) recv_buffer,
+                            buffer_len,
+                            node_comm,
+                            layerid,
+                            entry,
+                            DotProductImpl<double>,
+                            ScaleAddImpl<double>);  
           
           break;
           default:
               throw std::logic_error("MsAllreduceOp::Execute: Unsupported data type.");
       }
-      LOG(INFO, global_state_->rank)<<"Done processing gpu tensor in layer "<<layerid;
+      LOG(INFO, global_state_->rank)<<"Done processing tensor in layer "<<layerid;
+      if(entry.tensor->data() == entry.output->data()) {
+        // Return the buffer back into the pool of available buffers
+        global_state_->buffer_lock.lock();
+        global_state_->temp_buffers.push(buffer_manager);
+        global_state_->buffer_lock.unlock();
+      }
+
+      memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size());
+      LOG(INFO, global_state_->rank)<<"Finished ms gpu allreduction, exiting operation";
+
       global_state_->finished_parallel_reductions++;
     });
     layerid++;
@@ -179,9 +259,36 @@ void MsCudaAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src
     LOG(INFO, global_state_->rank)<<"memcpyUtil GPU OK.";
 }
 
+//TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
 template<typename T>
-void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq) {
-      thread_local static CublasThreadState CublasState;
+void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+  cublasHandle_t handle = getCublasThreadState().cublasHandle;
+  
+  auto adotbstatus = cublasDdot(handle, n, (double *)a, 1, (double *)b, 1, &dotProduct);
+  CublasContext::ErrorCheck("a cublasDdot b", adotbstatus);
+  
+  auto adotastatus = cublasDdot(handle, n, (double *)a, 1, (double *)a, 1, &anormsq);
+  CublasContext::ErrorCheck("a cublasDdot a", adotastatus);
+
+  auto bdotbstatus = cublasDdot(handle, n, (double *)b, 1, (double *)b, 1, &bnormsq);
+  CublasContext::ErrorCheck("b cublasDdot b", bdotbstatus);
+}
+
+//TODO CRITICAL! fix the force casting to double, this results in divide-by-zero exception
+template<typename T>
+void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
+  cublasHandle_t handle = getCublasThreadState().cublasHandle;
+  
+  auto scaleStatus = cublasDscal(handle, n, &acoeff, (double *)a, 1);
+  CublasContext::ErrorCheck("cublasDscal", scaleStatus);
+  
+  auto axpyStatus = cublasDaxpy(handle, n, &bcoeff, (double *)b, 1, (double *)a, 1);
+  CublasContext::ErrorCheck("cublasDaxpy", axpyStatus);
+}
+
+CublasThreadState MsCudaAllreduceOp::getCublasThreadState() {
+  thread_local static CublasThreadState CublasState;
+  return CublasState;
 }
 
 bool MsCudaAllreduceOp::Enabled(const ParameterManager& param_manager,
