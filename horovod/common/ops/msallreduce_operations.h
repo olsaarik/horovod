@@ -49,31 +49,33 @@ public:
                        const Response& response) const override;
 
 protected:
+  FusionBufferManager buffer_manager;
+
   // TODO fix this API
-  template<typename T>
-  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag);
+  template<typename T, typename F>
+  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc);
   
   // TODO new parasail begin  
-  template <typename T>
-  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag);
+  template<typename T, typename F>
+  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc);
   
   template <typename T>
   void SyncLocalBroadcast(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag);
 
-  template<typename T>
-  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag);
+  template<typename T, typename F>
+  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc);
 
   template<typename T>
   void ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b);
   
-  template<typename T>
-  void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor);
+  template<typename T, typename F>
+  void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc);
 
   template<typename T>
-  void ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq);  
+  void ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState global_state);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void ComputeDotAndNormSqrds(const float16* __restrict__ a, const float16* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq) {
+  inline void static ComputeDotAndNormSqrds(const float16* __restrict__ a, const float16* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -130,8 +132,12 @@ protected:
       }
   }
   // TODO new parasail end
- 
-  void Execute_helper(std::map<int, Status>& return_status, TensorTableEntry& entry, const Response& response, int layerid);
+  template<typename T, typename F>
+  void Execute_helper(std::map<int, Status>& return_status, 
+                      TensorTableEntry& entry, 
+                      const Response& response, int layerid,
+                      F dotProdFunc);
+  void virtual memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len);
 
 private:
   // reduces 8xfloat32 into one scalar

@@ -48,6 +48,7 @@
 #include "timeline.h"
 
 #if HAVE_CUDA
+#include "ops/msallreduce_cuda_operations.h"
 #include "ops/cuda_operations.h"
 #include "ops/mpi_cuda_operations.h"
 #endif
@@ -150,12 +151,12 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
   std::vector<std::shared_ptr<AllreduceOp>> allreduce_ops;
   std::vector<std::shared_ptr<AllgatherOp>> allgather_ops;
   std::vector<std::shared_ptr<BroadcastOp>> broadcast_ops;
-  if (state.msallreduce_enabled == true){
-    LOG(INFO) << "msallreduce enabled.";
-    allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
-  }
 #if HAVE_CUDA
 #if HOROVOD_GPU_ALLREDUCE == 'M'
+  if (state.msallreduce_enabled == true){
+    LOG(INFO) << "msallGpureduce enabled.";
+    allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsCudaAllreduceOp(&mpi_context, &cuda_context, &state)));
+  }
   allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(
       new MPI_CUDAAllreduce(&mpi_context, &cuda_context, &state)));
 
@@ -178,6 +179,11 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
       new MPIHierarchicalAllgather(&mpi_context, &state)));
 #endif
 #endif
+
+if (state.msallreduce_enabled == true){
+  LOG(INFO) << "msallreduce enabled.";
+  allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
+}
 
 #if HAVE_GLOO
   if (strcasecmp(state.cpu_operation.c_str(), "gloo") == 0) {
