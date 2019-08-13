@@ -261,6 +261,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     float dotProduct = 0.;
     float anormsq = 0.;
     float bnormsq = 0.;
+
     LOG(INFO, global_state_->rank)<<"Computing dot product.";
     dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_);
     LOG(INFO, global_state_->rank)<<"Computed dot product.";

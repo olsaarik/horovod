@@ -29,23 +29,6 @@ class CublasContext {
   void static ErrorCheck(std::string op_name, cublasStatus_t cublas_result);
 };
 
-struct CublasThreadState {
-
-    public:
-
-    cublasHandle_t cublasHandle;
-
-    CublasThreadState() {
-        auto status = cublasCreate(&cublasHandle);
-        CublasContext::ErrorCheck("cublasCreate", status);
-    }
-
-    ~CublasThreadState() {
-        auto status = cublasDestroy(cublasHandle);
-        CublasContext::ErrorCheck("cublasDestroy", status);
-    }
-};
-
 class MsCudaAllreduceOp : public MsAllreduceOp {
   public:
   MsCudaAllreduceOp(MPIContext* mpi_context, CUDAContext* cuda_context,
@@ -61,7 +44,14 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
   protected:
   struct CUDAContext* cuda_context_;
 
-  CublasThreadState static getCublasThreadState();
+  static cublasHandle_t get_cublasHandle() {
+      thread_local static cublasHandle_t cublas_Handle;
+      auto status = cublasCreate(&cublas_Handle);
+      CublasContext::ErrorCheck("cublasCreate", status);
+      return cublas_Handle;
+  }
+
+  void InitCUDA(const TensorTableEntry& entry);
 
   void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) override;
 
