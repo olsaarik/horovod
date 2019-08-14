@@ -97,67 +97,21 @@ void MsAllreduceOp::Execute_helper(std::map<int, Status>& return_status, TensorT
   }
 
   switch (entry.output->dtype()) {
-    case HOROVOD_INT8:
-      //TODO new parasail
-    MsAllreduce_Internal((int8_t*) buffer_data,
-                    (int8_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);  
-    break;     
-    case HOROVOD_UINT8:
-    //TODO new parasail
-    MsAllreduce_Internal((uint8_t*) buffer_data,
-                    (uint8_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);  
-    break;
     case HOROVOD_FLOAT16:
     //TODO new parasail
     MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
                     (MsAllreduceOp::float16*) recv_buffer,
                     buffer_len,
+			 MPI_SHORT,
                     node_comm,
                     layerid);  
 
-    case HOROVOD_UINT16:
-    //TODO new parasail
-    MsAllreduce_Internal((uint16_t*) buffer_data,
-                    (uint16_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);  
-    break;
-    case HOROVOD_INT16:
-    //TODO new parasail
-    MsAllreduce_Internal((int16_t*) buffer_data,
-                    (int16_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);  
-    break;
-    case HOROVOD_INT32:
-    //TODO new parasail
-    MsAllreduce_Internal((int32_t*) buffer_data,
-                    (int32_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);  
-    break;
-    case HOROVOD_INT64:
-    //TODO new parasail
-    MsAllreduce_Internal((int64_t*) buffer_data,
-                    (int64_t*) recv_buffer,
-                    buffer_len,
-                    node_comm,
-                    layerid);
-    break;
     case HOROVOD_FLOAT32:
     //TODO new parasail
     MsAllreduce_Internal((float*) buffer_data,
                     (float*) recv_buffer,
                     buffer_len,
+			 MPI_FLOAT,
                     node_comm,
                     layerid);
     break;
@@ -166,6 +120,7 @@ void MsAllreduceOp::Execute_helper(std::map<int, Status>& return_status, TensorT
     MsAllreduce_Internal((double*) buffer_data,
                     (double*) recv_buffer,
                     buffer_len,
+			 MPI_DOUBLE,
                     node_comm,
                     layerid);
     
@@ -193,15 +148,15 @@ bool MsAllreduceOp::Enabled(const ParameterManager& param_manager,
 
 // TODO new parasail algo begin
 template<typename T>
-void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag) {
+void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Datatype mpi_type, MPI_Comm* node_comm, int message_tag) {
   int count = buffer_length / sizeof(T);
-  //int local_rank = 0;
-  //MPI_Comm_rank(global_state_->local_comm, &local_rank);
-  //SyncLocalReduce(grad_buffer, recv_buffer, count, global_state_->local_comm, message_tag);
-  //if (local_rank == 0 && node_comm != NULL) {
-  SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, message_tag);
-  //}
-  //SyncLocalBroadcast(grad_buffer, recv_buffer, count, global_state_->local_comm, message_tag);
+  int local_rank = 0;
+  MPI_Comm_rank(global_state_->local_comm, &local_rank);
+  SyncLocalReduce(grad_buffer, recv_buffer, count, buffer_length, mpi_type, global_state_->local_comm, message_tag);
+  if (local_rank == 0 && node_comm != NULL) {
+    SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, message_tag);
+  }
+  SyncLocalBroadcast(grad_buffer, buffer_length, mpi_type, global_state_->local_comm, message_tag);
 }
 
 template<typename T>
@@ -264,59 +219,87 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
 }
 
 template <typename T>
-void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag)
+void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag)
 {
-    int rank;
-    int size;
-    MPI_Comm_rank(communicator, &rank);
-    MPI_Comm_size(communicator, &size);
-    MPI_Request* reqs = new MPI_Request[(size-1)*2];
-    int num_reqs = 0;
-    if (rank == 0){
-        for (int i = 1; i < size; i++){
-            MPI_Isend(grad_buffer, count*sizeof(T), MPI_CHAR, i, message_tag, communicator, &reqs[num_reqs++]);
-        }
-    MPI_Waitall(num_reqs, reqs, MPI_STATUS_IGNORE);
-    } else {
-        MPI_Recv(grad_buffer, count*sizeof(T), MPI_CHAR, 0, message_tag, communicator, MPI_STATUS_IGNORE);
+  // assumes broadcast from 0
+  int redn_rank, true_rank;
+  int size;
+  MPI_Comm_rank(communicator, &true_rank);
+  MPI_Comm_size(communicator, &size);
+
+  int root_node_rotation = false ? (message_tag % size) : 0;
+  redn_rank = (true_rank ^ root_node_rotation);
+  int level;
+  for (level = 1; level < size; level *= 2);
+  level /= 2; // this make sure that level < size
+
+  for(; level > 0; level /= 2) {
+    int neighbor_redn_rank = redn_rank ^ level;
+    int neighbor_true_rank = (neighbor_redn_rank ^ root_node_rotation);
+    if (redn_rank % level != 0)
+      continue;
+    if (neighbor_redn_rank >= size)
+      continue;
+    if ((redn_rank & level) == 0) {
+      // send grad_buffer to neighbor
+      // and dont wait for the send to finish
+      MPI_Send(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator);
     }
+    else {
+      // recv grad_buffer from neighbor
+      MPI_Recv(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+    }
+  }
 }
 
 template <typename T>
-void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag)
+void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag)
 {
-    int rank;
-    int size;
-    MPI_Comm_rank(communicator, &rank);
-    MPI_Comm_size(communicator, &size);
-    if (count % size != 0) {
-      throw std::logic_error("BUGBUG: requires # of tensor elements be divisible by hvd.size()");
+  int redn_rank, true_rank;
+  int size;
+  MPI_Comm_rank(communicator, &true_rank);
+  MPI_Comm_size(communicator, &size);
+
+  int root_node_rotation = false ? (message_tag % size) : 0;
+  redn_rank = (true_rank ^ root_node_rotation);
+
+  // Do a tree reduction
+  // The reduction ranks used are a permutation of true ranks (permuted based on message_tag)
+  // This spreads the load of tree reduction across different true ranks
+
+  // at each level l, node X0[0..0] receives from X1[0...],
+  // where [0..0] is l zeros in the bit representation of the rank of a node
+  int level;
+  for (level = 1; level < size; level *= 2) {
+    int neighbor_redn_rank = redn_rank ^ level;
+    int neighbor_true_rank = (neighbor_redn_rank ^ root_node_rotation);
+    if (redn_rank % level != 0)
+      continue; // stay idle at this level
+
+    if (neighbor_redn_rank >= size)
+      continue; // no neighbor and so stay idle at this level
+    
+    if ((redn_rank & level) == 0) {
+      // recv buffer from neighbor
+      MPI_Recv(recv_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+      
+      double anormsq = 0, bnormsq = 0, dotProduct = 0;
+      ComputeDotAndNormSqrds(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq);
+      
+      float acoeff = 1;
+      float bcoeff = 1;
+      if (anormsq != 0)
+	acoeff = 1.0 - dotProduct / anormsq * 0.5;
+      if (bnormsq != 0)
+	bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
+
+      ScaledAdd(count, acoeff, grad_buffer, bcoeff, recv_buffer);
     }
-    MPI_Request* reqs = new MPI_Request[(size-1)*2];
-    int num_reqs = 0;
-    for (int i = 0; i < size; i++){
-        if (i != rank){
-            MPI_Irecv((void*)&recv_buffer[count/size*i], count/size*sizeof(T), MPI_CHAR, i, message_tag, communicator, &reqs[num_reqs++]);
-            MPI_Isend((void*)&grad_buffer[count/size*i], count/size*sizeof(T), MPI_CHAR, i, message_tag, communicator, &reqs[num_reqs++]);
-        } else {
-            memcpy(&recv_buffer[count/size*i], (void *)&grad_buffer[count/size*i], count/size*sizeof(T));
-        }
+    else {
+      // send grad_buffer to neighbor
+      MPI_Send(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator);
     }
-    MPI_Waitall(num_reqs, reqs, MPI_STATUS_IGNORE);
-    for (int i = 1; i < size; i++){
-        PairwiseReduceWithComm(recv_buffer, &recv_buffer[count/size*i], count/size, message_tag, communicator, true);
-    }
-    num_reqs = 0;
-    if (rank == 0){
-        for (int i = 1; i < size; i++){
-            MPI_Irecv(&grad_buffer[count/size*i], count/size*sizeof(T), MPI_CHAR, i, message_tag, communicator, &reqs[num_reqs++]);
-        }
-        memcpy(grad_buffer, recv_buffer, count/size*sizeof(T));
-        MPI_Waitall(num_reqs, reqs, MPI_STATUS_IGNORE);
-    } else {
-        MPI_Send(recv_buffer, count/size*sizeof(T), MPI_CHAR, 0, message_tag, communicator);
-    }
-    delete[] reqs;
+  }
 }
 
 static bool IsPowerOfTwo(ulong x)
