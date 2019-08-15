@@ -56,15 +56,24 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
       return cublas_Handle;
   }
 
-  void InitCUDA(const TensorTableEntry& entry);
+  void InitCUBLAS(const TensorTableEntry& entry, int layerid);
 
-  void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) override;
+  void FinalizeCUBLAS();
+
+  void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid) override;
 
   template<typename T>
-  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);
+  void static DotProductImpl(const T* __restrict__  a,
+                             const T* __restrict__ b, 
+                             int n, 
+                             double& dotProduct, 
+                             double& anormsq, 
+                             double& bnormsq, 
+                             HorovodGlobalState *global_state,
+                             int layerid);
   
   template<typename T>
-  void static ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid);
 };
 } // namespace common
 } // namespace horovod

@@ -127,7 +127,7 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
         global_state_->buffer_lock.unlock();
       }
 
-  memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size());
+  memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size(), layerid);
   LOG(INFO, global_state_->rank)<<"Finished ms allreduction, exiting operation";
 
       global_state_->finished_parallel_reductions++;
@@ -140,7 +140,7 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
   return Status::OK();
 }
 
-void MsAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) {
+void MsAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid) {
     assert(dest != nullptr);
     assert(src != nullptr);
     LOG(INFO, global_state_->rank)<<"memcpyUtil CPU.";
@@ -155,20 +155,20 @@ bool MsAllreduceOp::Enabled(const ParameterManager& param_manager,
 
 // TODO new parasail algo begin
 template<typename T, typename F, typename S>
-void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc) {
+void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buffer_length, MPI_Comm* node_comm, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc) {
   int count = buffer_length / sizeof(T);
   int local_rank = 0;
   MPI_Comm_rank(global_state_->local_comm, &local_rank);
   MPI_Datatype mpi_type = mpi_context_->GetMPIDataType(entry.tensor);
-  SyncLocalReduce(grad_buffer, recv_buffer, count, buffer_length, mpi_type, global_state_->local_comm, message_tag, entry, dotProdFunc, scaleAddFunc);
+  SyncLocalReduce(grad_buffer, recv_buffer, count, mpi_type, global_state_->local_comm, layerid, entry, dotProdFunc, scaleAddFunc);
   if (local_rank == 0 && node_comm != NULL) {
-    SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, message_tag, entry, dotProdFunc, scaleAddFunc);
+    SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, layerid, entry, dotProdFunc, scaleAddFunc);
   }
-  SyncLocalBroadcast(grad_buffer, buffer_length, mpi_type, global_state_->local_comm, message_tag);
+  SyncLocalBroadcast(grad_buffer, count, mpi_type, global_state_->local_comm, layerid);
 }
 
 template<typename T>
-void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
     dotProduct = 0.;
     anormsq = 0.;
     bnormsq = 0.;
@@ -183,20 +183,20 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
 }
 
 template<typename T>
-void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
     for (int i = 0; i < n; i++) {
         a[i] = acoeff * a[i] + bcoeff * b[i];
     }
 }
 
 template<typename T, typename F, typename S>
-void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
+void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
     double dotProduct = 0.;
     double anormsq = 0.;
     double bnormsq = 0.;
 
     LOG(INFO, global_state_->rank)<<"Computing dot product.";
-    dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_);
+    dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
     LOG(INFO, global_state_->rank)<<"Computed dot product.";
     double reduce_vals[3];
     if (isLeftNeighbor) { 
@@ -228,12 +228,12 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
     // a = acoeff * a + bcoeff * b
-    scaleAddFunc(count, acoeff, a, bcoeff, b, global_state_);
+    scaleAddFunc(count, acoeff, a, bcoeff, b, global_state_, layerid);
     LOG(INFO, global_state_->rank)<<"Performed ScaledAdd.";
 }
 
 template <typename T>
-void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag)
+void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int count, MPI_Datatype mpi_type, MPI_Comm communicator, int layerid)
 {
   // assumes broadcast from 0
   int redn_rank, true_rank;
@@ -241,7 +241,7 @@ void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datat
   MPI_Comm_rank(communicator, &true_rank);
   MPI_Comm_size(communicator, &size);
 
-  int root_node_rotation = false ? (message_tag % size) : 0;
+  int root_node_rotation = false ? (layerid % size) : 0;
   redn_rank = (true_rank ^ root_node_rotation);
   int level;
   for (level = 1; level < size; level *= 2);
@@ -257,28 +257,28 @@ void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datat
     if ((redn_rank & level) == 0) {
       // send grad_buffer to neighbor
       // and dont wait for the send to finish
-      MPI_Send(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator);
+      MPI_Send(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator);
     }
     else {
       // recv grad_buffer from neighbor
-      MPI_Recv(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
     }
   }
 }
 
 template<typename T, typename F, typename S>
-void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc)
+void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Datatype mpi_type, MPI_Comm communicator, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc)
 {
   int redn_rank, true_rank;
   int size;
   MPI_Comm_rank(communicator, &true_rank);
   MPI_Comm_size(communicator, &size);
 
-  int root_node_rotation = false ? (message_tag % size) : 0;
+  int root_node_rotation = false ? (layerid % size) : 0;
   redn_rank = (true_rank ^ root_node_rotation);
 
   // Do a tree reduction
-  // The reduction ranks used are a permutation of true ranks (permuted based on message_tag)
+  // The reduction ranks used are a permutation of true ranks (permuted based on layerid)
   // This spreads the load of tree reduction across different true ranks
 
   // at each level l, node X0[0..0] receives from X1[0...],
@@ -295,10 +295,10 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, i
     
     if ((redn_rank & level) == 0) {
       // recv buffer from neighbor
-      MPI_Recv(recv_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(recv_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
       
       double anormsq = 0, bnormsq = 0, dotProduct = 0;
-      dotProdFunc(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq, global_state_);
+      dotProdFunc(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
       
       float acoeff = 1;
       float bcoeff = 1;
@@ -307,11 +307,11 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, i
       if (bnormsq >= 1e-8)
 	    bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
-      scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_);
+      scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_, layerid);
     }
     else {
       // send grad_buffer to neighbor
-      MPI_Send(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator);
+      MPI_Send(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator);
     }
   }
 }
@@ -322,7 +322,7 @@ static bool IsPowerOfTwo(ulong x)
 }
   
 template<typename T, typename F, typename S>
-void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc) {
+void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc) {
     int rank;
     int size;
     MPI_Comm_rank(communicator, &rank);
@@ -361,17 +361,17 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
             recvOffset = nghrCount;
         }
         for (int i = 0; i < std::max(nghrCount, myCount); i += chunk_size) {
-            MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+            MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE);
         }
-        scaleAddFunc(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset], global_state_);
+        scaleAddFunc(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset], global_state_, layerid);
 
         if (rank < nearest_power_2) {
             for (int i = 0; i < nghrCount; i += chunk_size) {
-                MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE);
             }
         } else {
             for (int i = 0; i < myCount; i += chunk_size)
-                MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator);
+                MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator);
         }
     }
 
@@ -399,15 +399,15 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
                 recvOffset = 0;
             }
             for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
-                MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE);
             if ((rank & level) != 0) {
                 grad_buffer = &grad_buffer[nghrCount];
                 recv_buffer = &recv_buffer[nghrCount];
             }
             if (level == 1) {
-                scaleAddFunc(myCount, 0.5, grad_buffer , 0.5, recv_buffer, global_state_);
+                scaleAddFunc(myCount, 0.5, grad_buffer , 0.5, recv_buffer, global_state_, layerid);
             } else {
-                PairwiseReduceWithComm(grad_buffer, recv_buffer, myCount, message_tag, reduction_comms[comm_index], (rank & level) == 0, dotProdFunc, scaleAddFunc);
+                PairwiseReduceWithComm(grad_buffer, recv_buffer, myCount, layerid, reduction_comms[comm_index], (rank & level) == 0, dotProdFunc, scaleAddFunc);
             }
         }
 
@@ -431,7 +431,7 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
                     recv_buffer = &grad_buffer[-nghrCount];
                 }
                 for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
-                    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE);
                 if ((rank & level) != 0) {
                     grad_buffer = &grad_buffer[-nghrCount];
                 }
@@ -446,12 +446,12 @@ void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI
         if (rank < nearest_power_2) {
             neighbor_rank = rank + remaining_non_power_2;
             for (int i = 0; i < count; i += chunk_size) {
-                MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator);
+                MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator);
             }
         } else {
             neighbor_rank = rank - remaining_non_power_2;
             for (int i = 0; i < count; i += chunk_size)
-                MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + message_tag, communicator, MPI_STATUS_IGNORE);
+                MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE);
         }
     }
 

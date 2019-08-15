@@ -49,29 +49,29 @@ protected:
 
   // TODO fix this API
   template<typename T, typename F, typename S>
-  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
+  void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
   
   // TODO new parasail begin  
   template<typename T, typename F, typename S>
-  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
+  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Datatype mpi_type, MPI_Comm communicator, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
   
   template <typename T>
-  void SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag);
+  void SyncLocalBroadcast(T *grad_buffer, int count, MPI_Datatype mpi_type, MPI_Comm communicator, int layerid);
 
   template<typename T, typename F, typename S>
-  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
+  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid);
   
   template<typename T, typename F, typename S>
-  void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
+  void PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);  
+  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrdsfp16(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
+  inline void static ComputeDotAndNormSqrdsfp16(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -110,7 +110,7 @@ protected:
       bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void static ScaledAddfp16(int len, double acoeff, uint16_t* __restrict__ a, double bcoeff, uint16_t* __restrict__ b, HorovodGlobalState *global_state) {
+  inline void static ScaledAddfp16(int len, double acoeff, uint16_t* __restrict__ a, double bcoeff, uint16_t* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
       int i;
       __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
       __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
@@ -128,7 +128,7 @@ protected:
       }
   }
 
-  void virtual memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len);
+  void virtual memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid);
 
 private:
   // reduces 8xfloat32 into one scalar

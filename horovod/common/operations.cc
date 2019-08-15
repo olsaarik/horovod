@@ -1026,19 +1026,19 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
 
   // parasail new algo begin
   // TODO make this a condition and merge with horovod's hiearchical allreduce
-  if(state.msallreduce_enabled == true) {
-    //MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
-    //int ms_local_rank, ms_local_size;
-    //MPI_Comm_size(state.local_comm, &ms_local_size);
-    //MPI_Comm_rank(state.local_comm, &ms_local_rank);
-    if (true) //ms_local_rank == 0)
+if(state.msallreduce_enabled == true) {
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
+    int ms_local_rank, ms_local_size;
+    MPI_Comm_size(state.local_comm, &ms_local_size);
+    MPI_Comm_rank(state.local_comm, &ms_local_rank);
+    if (ms_local_rank == 0)
     {
         int rank, size;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         // converting to node-based rank and size
-        ///rank /= ms_local_size;
-        //size /= ms_local_size;
+        rank /= ms_local_size;
+        size /= ms_local_size;
 
         MPI_Group world_group;
         MPI_Comm_group(MPI_COMM_WORLD, &world_group);
@@ -1059,7 +1059,7 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
             for (int i = 0; i < (level << 1); i++)
             {
                 // converting back to world rank
-	      node_rank[i] = (base_rank + i);// * ms_local_size;
+                node_rank[i] = (base_rank + i) * ms_local_size;
             }
             MPI_Group red_group;
             MPI_Group_incl(world_group, (level << 1), node_rank, &red_group);
