@@ -53,13 +53,13 @@ protected:
   
   // TODO new parasail begin  
   template<typename T, typename F, typename S>
-  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
+  void SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
   
   template <typename T>
-  void SyncLocalBroadcast(T *grad_buffer, T *recv_buffer, int count, MPI_Comm communicator, int message_tag);
+  void SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datatype mpi_type, MPI_Comm communicator, int message_tag);
 
   template<typename T, typename F, typename S>
-  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc, S scaleAddFunc);
+  void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
   void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);

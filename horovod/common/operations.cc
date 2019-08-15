@@ -151,11 +151,13 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
   std::vector<std::shared_ptr<AllreduceOp>> allreduce_ops;
   std::vector<std::shared_ptr<AllgatherOp>> allgather_ops;
   std::vector<std::shared_ptr<BroadcastOp>> broadcast_ops;
+  std::vector<std::shared_ptr<AllreduceOp>> msallreduce_ops;
+
 #if HAVE_CUDA
 #if HOROVOD_GPU_ALLREDUCE == 'M'
   if (state.msallreduce_enabled == true){
     LOG(INFO) << "msallGpureduce enabled.";
-    allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsCudaAllreduceOp(&mpi_context, &cuda_context, &state)));
+    msallreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsCudaAllreduceOp(&mpi_context, &cuda_context, &state)));
   }
   allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(
       new MPI_CUDAAllreduce(&mpi_context, &cuda_context, &state)));
@@ -180,9 +182,10 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
 #endif
 #endif
 
+//TODO remove this check once fully tested
 if (state.msallreduce_enabled == true){
   LOG(INFO) << "msallreduce enabled.";
-  allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
+  msallreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
 }
 
 #if HAVE_GLOO
@@ -220,7 +223,7 @@ if (state.msallreduce_enabled == true){
   std::shared_ptr<ErrorOp> error_op(new ErrorOp(&state));
 
   return new OperationManager(&state.param_manager, allreduce_ops,
-                              allgather_ops, broadcast_ops, error_op);
+                              allgather_ops, broadcast_ops, msallreduce_ops, error_op);
 }
 
 // Store the Request for a name, and return whether the total count of
@@ -307,7 +310,8 @@ Response ConstructResponse(std::unique_ptr<MessageTable>& message_table,
   // If we are doing an allreduce or broadcast, check that all tensor shapes are
   // identical.
   if (message_type == Request::ALLREDUCE ||
-      message_type == Request::BROADCAST) {
+      message_type == Request::BROADCAST ||
+      message_type == Request::MSALLREDUCE) {
     TensorShape tensor_shape;
     for (auto dim : requests[0].tensor_shape()) {
       tensor_shape.AddDim(dim);
@@ -454,6 +458,8 @@ Response ConstructResponse(std::unique_ptr<MessageTable>& message_table,
     response.set_response_type(Response::ALLREDUCE);
   } else if (message_type == Request::BROADCAST) {
     response.set_response_type(Response::BROADCAST);
+  } else if (message_type == Request::MSALLREDUCE) {
+    response.set_response_type(Response::MSALLREDUCE);
   }
   response.set_devices(devices);
 
@@ -530,7 +536,7 @@ ResponseList FuseResponses(std::deque<Response>& responses,
         assert(first_response.tensor_names().size() == 1);
         responses.pop_front();
         // we find the first allreduce response and make it the host for all subsequent to-be-reduced tensors
-        if (first_response.response_type() == Response::ResponseType::ALLREDUCE) {
+        if (first_response.response_type() == Response::ResponseType::MSALLREDUCE) {
           // increment iterator since we have found one allreduce
           LOG(INFO, state.rank)<<"Found 1 Allreduce request.";
           allreduce_merged = true;
@@ -718,6 +724,7 @@ void PerformOperation(TensorTable& tensor_table, Response response, HorovodGloba
       assert(response.response_type() == Response::ALLREDUCE ||
              response.response_type() == Response::ALLGATHER ||
              response.response_type() == Response::BROADCAST ||
+             response.response_type() == Response::MSALLREDUCE ||
              response.response_type() == Response::ERROR);
 
       entries.push_back(iter->second);
@@ -1020,18 +1027,18 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
   // parasail new algo begin
   // TODO make this a condition and merge with horovod's hiearchical allreduce
   if(state.msallreduce_enabled == true) {
-    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
-    int ms_local_rank, ms_local_size;
-    MPI_Comm_size(state.local_comm, &ms_local_size);
-    MPI_Comm_rank(state.local_comm, &ms_local_rank);
-    if (ms_local_rank == 0)
+    //MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
+    //int ms_local_rank, ms_local_size;
+    //MPI_Comm_size(state.local_comm, &ms_local_size);
+    //MPI_Comm_rank(state.local_comm, &ms_local_rank);
+    if (true) //ms_local_rank == 0)
     {
         int rank, size;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         // converting to node-based rank and size
-        rank /= ms_local_size;
-        size /= ms_local_size;
+        ///rank /= ms_local_size;
+        //size /= ms_local_size;
 
         MPI_Group world_group;
         MPI_Comm_group(MPI_COMM_WORLD, &world_group);
@@ -1052,7 +1059,7 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
             for (int i = 0; i < (level << 1); i++)
             {
                 // converting back to world rank
-                node_rank[i] = (base_rank + i) * ms_local_size;
+	      node_rank[i] = (base_rank + i);// * ms_local_size;
             }
             MPI_Group red_group;
             MPI_Group_incl(world_group, (level << 1), node_rank, &red_group);
@@ -1915,13 +1922,19 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
                               std::shared_ptr<Tensor> output,
                               std::shared_ptr<ReadyEvent> ready_event,
                               const std::string name, const int device,
-                              StatusCallback callback) {
+                              StatusCallback callback,
+                              AllreduceType allreduce_type) {
   Request message;
   message.set_request_rank(horovod_global.rank);
   message.set_tensor_name(name);
   message.set_tensor_type(tensor->dtype());
   message.set_device(device);
-  message.set_request_type(Request::ALLREDUCE);
+  if (allreduce_type == AllreduceType::MS_ALLREDUCE) {
+    LOG(INFO, "Queued up an msallreduce request");
+    message.set_request_type(Request::MSALLREDUCE);
+  } else {
+    message.set_request_type(Request::ALLREDUCE);
+  }
   for (int i = 0; i < tensor->shape().dims(); ++i) {
     message.add_tensor_shape((int64_t)tensor->shape().dim_size(i));
   }

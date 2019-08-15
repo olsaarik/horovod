@@ -30,12 +30,13 @@ from horovod.tensorflow.mpi_ops import allgather, broadcast, _allreduce
 from horovod.tensorflow.mpi_ops import init, shutdown
 from horovod.tensorflow.mpi_ops import size, local_size, rank, local_rank
 from horovod.tensorflow.mpi_ops import mpi_threads_supported
+from horovod.tensorflow.mpi_ops import AllreduceType
 from horovod.tensorflow.util import _executing_eagerly
 
 import tensorflow as tf
 
 def allreduce(tensor, average=True, device_dense='', device_sparse='',
-              compression=Compression.none):
+              compression=Compression.none, allreduce_type=AllreduceType.SumAllreduce):
     """Perform an allreduce on a tf.Tensor or tf.IndexedSlices.
 
     This function performs a bandwidth-optimal ring allreduce on the input
@@ -64,9 +65,12 @@ def allreduce(tensor, average=True, device_dense='', device_sparse='',
         with tf.device(device_sparse):
             # For IndexedSlices, do two allgathers instead of an allreduce.
             horovod_size = tf.cast(size(), tensor.values.dtype)
+            # TODO: Need to fix this to actuall call MSALLREDUCE
             values = allgather(tensor.values)
             indices = allgather(tensor.indices)
 
+            if allreduce_type != AllreduceType.SumAllreduce:
+                average = False
             # To make this operation into an average, divide allgathered values by
             # the Horovod size.
             new_values = tf.div(values, horovod_size) if average else values
@@ -76,15 +80,12 @@ def allreduce(tensor, average=True, device_dense='', device_sparse='',
         with tf.device(device_dense):
             horovod_size = tf.cast(size(), dtype=tensor.dtype)
             tensor_compressed, ctx = compression.compress(tensor)
-            summed_tensor_compressed = _allreduce(tensor_compressed)
+            summed_tensor_compressed = _allreduce(tensor_compressed, allreduce_type=allreduce_type)
             summed_tensor = compression.decompress(summed_tensor_compressed, ctx)
-            #TODO fix this
-            msallreduce_enable = False
-            if 'HOROVOD_MSALLREDUCE_ENABLE' in os.environ:
-                msallreduce_enable = os.environ['HOROVOD_MSALLREDUCE_ENABLE']
-            use_msallreduce = True if msallreduce_enable is not None and msallreduce_enable == '1' else False
+            if allreduce_type != AllreduceType.SumAllreduce:
+                average = False
             new_tensor = (tf.div(summed_tensor, horovod_size)
-                          if average and not use_msallreduce else summed_tensor)
+                          if average else summed_tensor)
         return new_tensor
 
 
@@ -190,6 +191,11 @@ class DistributedOptimizer(tf.train.Optimizer):
         self._compression = compression
         self._sparse_as_dense = sparse_as_dense
 
+        msallreduce_enable = False
+        if 'HOROVOD_MSALLREDUCE_ENABLE' in os.environ:
+            msallreduce_enable = os.environ['HOROVOD_MSALLREDUCE_ENABLE']
+        allreduce_type = AllreduceType.MsAllreduce if msallreduce_enable is not None and msallreduce_enable == '1' else AllreduceType.SumAllreduce
+
         def allreduce_grads(grads):
             with tf.name_scope(self._name + "_Allreduce"):
                 if self._sparse_as_dense:
@@ -200,7 +206,8 @@ class DistributedOptimizer(tf.train.Optimizer):
                 return [allreduce(grad,
                                   device_dense=self._device_dense,
                                   device_sparse=self._device_sparse,
-                                  compression=self._compression)
+                                  compression=self._compression,
+                                  allreduce_type=allreduce_type)
                         if grad is not None else grad
                         for grad in grads]
 
@@ -263,6 +270,11 @@ if hasattr(tf, 'GradientTape'):
             self._compression = compression
             self._sparse_as_dense = sparse_as_dense
 
+            msallreduce_enable = False
+            if 'HOROVOD_MSALLREDUCE_ENABLE' in os.environ:
+                msallreduce_enable = os.environ['HOROVOD_MSALLREDUCE_ENABLE']
+            allreduce_type = AllreduceType.MsAllreduce if msallreduce_enable is not None and msallreduce_enable == '1' else AllreduceType.SumAllreduce
+
             def allreduce_grads(grads):
                 with tf.name_scope(self._name + "_Allreduce"):
                     if self._sparse_as_dense:
@@ -272,7 +284,8 @@ if hasattr(tf, 'GradientTape'):
                     return [allreduce(grad,
                                       device_dense=self._device_dense,
                                       device_sparse=self._device_sparse,
-                                      compression=self._compression)
+                                      compression=self._compression,
+                                      allreduce_type=allreduce_type)
                             if grad is not None else grad
                             for grad in grads]
 

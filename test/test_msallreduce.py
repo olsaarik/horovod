@@ -10,6 +10,7 @@ from tensorflow.python.framework import ops
 import warnings
 from datetime import datetime
 import horovod.tensorflow as hvd
+from horovod.tensorflow import AllreduceType
 
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
@@ -67,7 +68,7 @@ class MPITests(tf.test.TestCase):
                 tensors = map(lambda tensor: tf.cast(tensor, dtype), tensors)
                 # and away we go: do reduction
                 reduced_tensors = [
-                    self.evaluate(hvd.allreduce(tensor, average=False))
+                    self.evaluate(hvd.allreduce(tensor, average=False, allreduce_type=AllreduceType.MsAllreduce))
                     for tensor in tensors
                 ]
                 # cast expected result to the type of the tensorflow values
@@ -95,7 +96,7 @@ class MPITests(tf.test.TestCase):
                 tensors = map(lambda tensor: tf.cast(tensor, dtype), tensors)
                 # and away we go: do reduction
                 reduced_tensors = [
-                    self.evaluate(hvd.allreduce(tensor, average=False))
+                    self.evaluate(hvd.allreduce(tensor, average=False, allreduce_type=AllreduceType.MsAllreduce))
                     for tensor in tensors
                 ]
                 # cast expected result to the type of the tensorflow values
