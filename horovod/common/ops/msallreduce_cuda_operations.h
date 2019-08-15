@@ -16,9 +16,12 @@
 #ifndef HOROVOD_MSALLREDUCE_CUDA_OPERATIONS_H
 #define HOROVOD_MSALLREDUCE_CUDA_OPERATIONS_H
 
+#include <typeinfo>
+
 #include "msallreduce_operations.h"
 #include "cuda_operations.h"
 #include "cublas_v2.h"
+#include "cuda_fp16.h"
 
 namespace horovod {
 namespace common {
@@ -27,6 +30,9 @@ class CublasContext {
   std::string static GetCublasErrorString (cublasStatus_t cublas_result);
 
   void static ErrorCheck(std::string op_name, cublasStatus_t cublas_result);
+
+  template<typename T>
+  cudaDataType_t static GetCublasDataType (T* variable);
 };
 
 class MsCudaAllreduceOp : public MsAllreduceOp {
@@ -44,10 +50,9 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
   protected:
   struct CUDAContext* cuda_context_;
 
+  thread_local static cublasHandle_t cublas_Handle;
+
   static cublasHandle_t get_cublasHandle() {
-      thread_local static cublasHandle_t cublas_Handle;
-      auto status = cublasCreate(&cublas_Handle);
-      CublasContext::ErrorCheck("cublasCreate", status);
       return cublas_Handle;
   }
 
@@ -56,10 +61,10 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
   void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len) override;
 
   template<typename T>
-  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state);
+  void static DotProductImpl(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);
   
   template<typename T>
-  void static ScaleAddImpl(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
 };
 } // namespace common
 } // namespace horovod

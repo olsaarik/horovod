@@ -84,8 +84,8 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
       switch (entry.output->dtype()) {
           case HOROVOD_FLOAT16:
           //TODO new parasail
-            MsAllreduce_Internal((MsAllreduceOp::float16*) buffer_data,
-                            (MsAllreduceOp::float16*) recv_buffer,
+            MsAllreduce_Internal((uint16_t*) buffer_data,
+                            (uint16_t*) recv_buffer,
                             buffer_len,
                             node_comm,
                             layerid,
@@ -147,73 +147,6 @@ void MsAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src, si
     memcpy(dest, src, buffer_len);
 }
 
-template<typename T, typename F>
-void MsAllreduceOp::Execute_helper(std::map<int, Status>& return_status, 
-                                   TensorTableEntry& entry, 
-                                   const Response& response, 
-                                   int layerid,
-                                   F dotProdFunc){
-  void* buffer_data;
-  int buffer_len;
-  void* recv_buffer;
-
-  buffer_data = (void*) entry.tensor->data();
-
-  buffer_len = entry.output->size();
-
-  if(entry.tensor->data() == entry.output->data()) {
-    // Get the temp buffer to be used for the Op
-    global_state_->buffer_lock.lock();
-    assert(!global_state_->temp_buffers.empty());
-    buffer_manager = global_state_->temp_buffers.front();
-    global_state_->temp_buffers.pop();
-    global_state_->buffer_lock.unlock();
-
-    // TODO: Maybe add before and after callbacks to timeline?
-    Status status = buffer_manager.InitializeBuffer(
-        buffer_len,
-        entry.device, entry.context,
-        global_state_->current_nccl_stream,
-        [](){},
-        [](){},
-        [](int64_t& size, int64_t& threshold){return size >= threshold;});
-
-    if (!status.ok()) {
-        throw std::logic_error("MsAllreduceOp::Execute_helper: Initialize buffer failed.");
-        return;
-    }
-
-    auto& buffer = buffer_manager.GetBuffer(entry.device, entry.context->framework(), global_state_->current_nccl_stream);
-    recv_buffer = const_cast<void*>(buffer->AccessData(entry.context));
-  }
-  else {
-    recv_buffer = (void*) entry.output->data();
-  }
-  LOG(INFO, global_state_->rank)<<"Begin to process tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
-  
-  MPI_Comm* node_comm = NULL;
-  if (global_state_->rank_log_size != 0) {
-	node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
-  }
-
-//   MsAllreduce_Internal((T*) buffer_data,
-//                   (T*) recv_buffer,
-//                   buffer_len,
-//                   node_comm,
-//                   layerid,
-//                   entry,
-//                   dotProdFunc<T>);  
-  if(entry.tensor->data() == entry.output->data()) {
-    // Return the buffer back into the pool of available buffers
-    global_state_->buffer_lock.lock();
-    global_state_->temp_buffers.push(buffer_manager);
-    global_state_->buffer_lock.unlock();
-  }
-
-  memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size());
-  LOG(INFO, global_state_->rank)<<"Finished ms allreduction, exiting operation";
-}
-
 bool MsAllreduceOp::Enabled(const ParameterManager& param_manager,
                            const std::vector<TensorTableEntry>& entries,
                            const Response& response) const {
@@ -235,7 +168,7 @@ void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buf
 }
 
 template<typename T>
-void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
     dotProduct = 0.;
     anormsq = 0.;
     bnormsq = 0.;
@@ -250,7 +183,7 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
 }
 
 template<typename T>
-void MsAllreduceOp::ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
+void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state) {
     for (int i = 0; i < n; i++) {
         a[i] = acoeff * a[i] + bcoeff * b[i];
     }
@@ -258,14 +191,14 @@ void MsAllreduceOp::ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoe
 
 template<typename T, typename F, typename S>
 void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
-    float dotProduct = 0.;
-    float anormsq = 0.;
-    float bnormsq = 0.;
+    double dotProduct = 0.;
+    double anormsq = 0.;
+    double bnormsq = 0.;
 
     LOG(INFO, global_state_->rank)<<"Computing dot product.";
     dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_);
     LOG(INFO, global_state_->rank)<<"Computed dot product.";
-    float reduce_vals[3];
+    double reduce_vals[3];
     if (isLeftNeighbor) { 
         reduce_vals[0] = anormsq;
         reduce_vals[1] = bnormsq;
@@ -275,7 +208,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     }
     reduce_vals[2] = dotProduct;
     // TODO replace this with something else
-    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_FLOAT, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
     LOG(INFO, global_state_->rank)<<"Performed mpi allreduce.";
 
     if (isLeftNeighbor) { 
@@ -287,8 +220,8 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int message_ta
     }
     dotProduct = reduce_vals[2];
 
-    float acoeff = 1;
-    float bcoeff = 1;
+    double acoeff = 1;
+    double bcoeff = 1;
     if (anormsq != 0)
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
     if (bnormsq != 0)

@@ -35,10 +35,6 @@ namespace common {
 
 class MsAllreduceOp : public PointToPointOp {
 public:
-  // Defining a data type for msallreduce float16 implementation
-  struct float16 {
-    uint16_t value;
-  };
   MsAllreduceOp(MPIContext* mpi_context, HorovodGlobalState* global_state);
 
   Status Execute(std::vector<TensorTableEntry>& entries,
@@ -66,16 +62,16 @@ protected:
   void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int message_tag, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
+  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state);
   
   template<typename T, typename F, typename S>
   void PairwiseReduceWithComm(T* a, T* b, int count, int message_tag, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
 
   template<typename T>
-  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state);  
+  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrdsfp16(const float16* __restrict__ a, const float16* __restrict__ b, int len, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state) {
+  inline void static ComputeDotAndNormSqrdsfp16(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state) {
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -114,7 +110,7 @@ protected:
       bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void static ScaledAddfp16(int len, float acoeff, float16* __restrict__ a, float bcoeff, float16* __restrict__ b, HorovodGlobalState *global_state) {
+  inline void static ScaledAddfp16(int len, double acoeff, uint16_t* __restrict__ a, double bcoeff, uint16_t* __restrict__ b, HorovodGlobalState *global_state) {
       int i;
       __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
       __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
@@ -131,12 +127,7 @@ protected:
           _mm_store_ph_partial(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec), len - i);
       }
   }
-  // TODO new parasail end
-  template<typename T, typename F>
-  void Execute_helper(std::map<int, Status>& return_status, 
-                      TensorTableEntry& entry, 
-                      const Response& response, int layerid,
-                      F dotProdFunc);
+
   void virtual memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len);
 
 private:
@@ -159,19 +150,19 @@ private:
   }
 
   // load 8 float16s from a and return the __m256 register
-  inline __m256 static _mm_loadu_ph(const float16* a) {
+  inline __m256 static _mm_loadu_ph(const uint16_t* a) {
       __m128i r = _mm_loadu_si128((__m128i*)(a));
       return _mm256_cvtph_ps(r);
   }
 
   // store 8 float16 from val into a 
-  inline void static _mm_store_ph(float16* a, __m256 val) {
+  inline void static _mm_store_ph(uint16_t* a, __m256 val) {
       __m128i r = _mm256_cvtps_ph(val, 0);
       _mm_storeu_si128((__m128i*)a, r);
   }
 
   // load len (< 8) float16s from a, fill the rest with 0s, and return the __m256 register
-  inline __m256 static _mm_loadu_ph_partial(const float16* a, int len) {
+  inline __m256 static _mm_loadu_ph_partial(const uint16_t* a, int len) {
       short e[8];
       std::memset(e, 0, sizeof(e));
       std::memcpy(e, a, std::min(len, 8) * sizeof(short));
@@ -180,19 +171,19 @@ private:
   }
 
   // store the first len (< 8) float16s from val and store into a
-  inline void static _mm_store_ph_partial(float16* a, __m256 val, int len) {
+  inline void static _mm_store_ph_partial(uint16_t* a, __m256 val, int len) {
       __m128i r = _mm256_cvtps_ph(val, 0);
       //for (int i = 0; i < std::min(len, 8); i++) 
       //    a[i].value = _mm_extract_epi16(r, i);
       // but we cannot do this because the second argument to _mm_extract_epi16 has to be a compile time constant 
-      if (0 < len) a[0].value = (short)_mm_extract_epi16(r, 0);
-      if (1 < len) a[1].value = (short)_mm_extract_epi16(r, 1);
-      if (2 < len) a[2].value = (short)_mm_extract_epi16(r, 2);
-      if (3 < len) a[3].value = (short)_mm_extract_epi16(r, 3);
-      if (4 < len) a[4].value = (short)_mm_extract_epi16(r, 4);
-      if (5 < len) a[5].value = (short)_mm_extract_epi16(r, 5);
-      if (6 < len) a[6].value = (short)_mm_extract_epi16(r, 6);
-      if (7 < len) a[7].value = (short)_mm_extract_epi16(r, 7);
+      if (0 < len) a[0] = (short)_mm_extract_epi16(r, 0);
+      if (1 < len) a[1] = (short)_mm_extract_epi16(r, 1);
+      if (2 < len) a[2] = (short)_mm_extract_epi16(r, 2);
+      if (3 < len) a[3] = (short)_mm_extract_epi16(r, 3);
+      if (4 < len) a[4] = (short)_mm_extract_epi16(r, 4);
+      if (5 < len) a[5] = (short)_mm_extract_epi16(r, 5);
+      if (6 < len) a[6] = (short)_mm_extract_epi16(r, 6);
+      if (7 < len) a[7] = (short)_mm_extract_epi16(r, 7);
   }
 };
 

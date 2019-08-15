@@ -88,7 +88,7 @@ class MPITests(tf.test.TestCase):
             answer = parasail_reference_operation(a, b)
             expected.append(answer)
         rank_num = hvd.local_rank()
-        for dtype in [tf.float32]:
+        for dtype in [tf.float32, tf.float16]:
             with tf.device("/gpu:{}".format(rank_num)):
                 tensors = map(tf.constant, rank0_tensors if hvd.rank() == 0 else rank1_tensors)
                 # cast to the corresponding dtype
