@@ -243,11 +243,11 @@ void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int buffer_len, MPI_Datat
     if ((redn_rank & level) == 0) {
       // send grad_buffer to neighbor
       // and dont wait for the send to finish
-      MPI_Send(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator);
+      MPI_Send(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator);
     }
     else {
       // recv grad_buffer from neighbor
-      MPI_Recv(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
     }
   }
 }
@@ -281,23 +281,23 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, i
     
     if ((redn_rank & level) == 0) {
       // recv buffer from neighbor
-      MPI_Recv(recv_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(recv_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator, MPI_STATUS_IGNORE);
       
       double anormsq = 0, bnormsq = 0, dotProduct = 0;
       ComputeDotAndNormSqrds(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq);
       
       float acoeff = 1;
       float bcoeff = 1;
-      if (anormsq != 0)
+      if (anormsq >= 1e-8)
 	acoeff = 1.0 - dotProduct / anormsq * 0.5;
-      if (bnormsq != 0)
+      if (bnormsq >= 1e-8)
 	bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
       ScaledAdd(count, acoeff, grad_buffer, bcoeff, recv_buffer);
     }
     else {
       // send grad_buffer to neighbor
-      MPI_Send(grad_buffer, buffer_len, mpi_type, neighbor_true_rank, message_tag, communicator);
+      MPI_Send(grad_buffer, buffer_len/sizeof(T), mpi_type, neighbor_true_rank, message_tag, communicator);
     }
   }
 }
