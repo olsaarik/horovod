@@ -115,13 +115,15 @@ protected:
       for (i = 0; i < len - 7; i += 8) {
           __m256 aVec = _mm_loadu_ph(&a[i]);
           __m256 bVec = _mm_loadu_ph(&b[i]);
-          aVec = _mm256_mul_ps(acoeffVec, aVec);
+          //BUGBUG
+          //aVec = _mm256_mul_ps(acoeffVec, aVec);
           _mm_store_ph(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec));
       }
       if (i < len) {
           __m256 aVec = _mm_loadu_ph_partial(&a[i], len - i);
           __m256 bVec = _mm_loadu_ph_partial(&b[i], len - i);
-          aVec = _mm256_mul_ps(acoeffVec, aVec);
+          //BUGBUG
+          //aVec = _mm256_mul_ps(acoeffVec, aVec);
           _mm_store_ph_partial(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec), len - i);
       }
   }

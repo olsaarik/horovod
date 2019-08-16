@@ -175,7 +175,6 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
     anormsq = 0.;
     bnormsq = 0.;
     LOG(INFO, global_state->rank)<<"Entering ComputeDotAndNormSqrds";
-
     for (int i = 0; i < n; i++) {
         dotProduct += a[i] * b[i];
         anormsq += a[i] * a[i];
@@ -187,7 +186,7 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
 template<typename T>
 void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
     for (int i = 0; i < n; i++) {
-        a[i] = acoeff * a[i] + bcoeff * b[i];
+        a[i] = a[i] + bcoeff * b[i];
     }
 }
 
@@ -303,12 +302,13 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
       double anormsq = 0, bnormsq = 0, dotProduct = 0;
       dotProdFunc(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
       
-      float acoeff = 1;
-      float bcoeff = 1;
+      double acoeff = 1;
+      double bcoeff = 1;
+      //BUGBUG test
       if (anormsq >= 1e-8)
 	    acoeff = 1.0 - dotProduct / anormsq * 0.5;
       if (bnormsq >= 1e-8)
-	    bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
+	    bcoeff = 1.0 - dotProduct / bnormsq;
 
       scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_, layerid);
     }
