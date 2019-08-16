@@ -45,8 +45,6 @@ public:
                        const Response& response) const override;
 
 protected:
-  FusionBufferManager buffer_manager;
-
   // TODO fix this API
   template<typename T, typename F, typename S>
   void MsAllreduce_Internal(T* gradient_buffer, T* result_buffer, int buffer_length, MPI_Comm* node_comm, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);

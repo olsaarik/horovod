@@ -81,24 +81,47 @@ MsCudaAllreduceOp::MsCudaAllreduceOp(MPIContext* mpi_context, CUDAContext* cuda_
 void MsCudaAllreduceOp::InitCUBLAS(const TensorTableEntry& entry, int layerid) {
   cuda_context_->ErrorCheck("cudaSetDevice", cudaSetDevice(entry.device));
 
+  LOG(INFO, global_state_->rank)<<"Checking for existing stream for layer "<<layerid<<" "<<std::this_thread::get_id();
   // Ensure stream is in the map before executing reduction.
   cudaStream_t& stream = cuda_context_->streams[global_state_->current_nccl_stream][layerid];
   if (stream == nullptr) {
-    int greatest_priority;
-    cuda_context_->ErrorCheck("cudaDeviceGetStreamPriorityRange",
-                              cudaDeviceGetStreamPriorityRange(NULL, &greatest_priority));
-    cuda_context_->ErrorCheck("cudaStreamCreateWithPriority",
-                              cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatest_priority));
+
+    std::lock_guard<std::mutex> guard(global_state_->mutex);
+    if (stream == nullptr) {
+      LOG(INFO, global_state_->rank)<<"Stream is null, creating new stream "<<std::this_thread::get_id();
+      int greatest_priority;
+      cuda_context_->ErrorCheck("cudaDeviceGetStreamPriorityRange",
+                                cudaDeviceGetStreamPriorityRange(NULL, &greatest_priority));
+      cuda_context_->ErrorCheck("cudaStreamCreateWithPriority",
+                                cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatest_priority));
+    }
   }
+  cudaStream_t& device_stream = cuda_context_->streams[global_state_->current_nccl_stream][entry.device];
+  if (device_stream == nullptr) {
+    std::lock_guard<std::mutex> guard(global_state_->mutex);
+    if (stream == nullptr) {
+      LOG(INFO, global_state_->rank)<<"device Stream is null, creating new device stream "<<std::this_thread::get_id();
+      int greatest_priority;
+      cuda_context_->ErrorCheck("cudaDeviceGetStreamPriorityRange",
+                                cudaDeviceGetStreamPriorityRange(NULL, &greatest_priority));
+      cuda_context_->ErrorCheck("cudaStreamCreateWithPriority",
+                                cudaStreamCreateWithPriority(&device_stream, cudaStreamNonBlocking, greatest_priority));
+    }
+  }
+
   auto status = cublasCreate(&cublas_Handle);
-  cublasSetStream(cublas_Handle,stream);
   CublasContext::ErrorCheck("cublasCreate", status);
-  LOG(INFO, global_state_->rank)<<"Successfully initialized cublas.";
+
+  cublasSetStream(cublas_Handle, stream);
+  cudaStreamSynchronize(stream);
+  LOG(INFO, global_state_->rank)<<"Successfully initialized cublas. "<<std::this_thread::get_id();
 }
 
 void MsCudaAllreduceOp::FinalizeCUBLAS() {
-    auto status = cublasDestroy(get_cublasHandle());
-    CublasContext::ErrorCheck("cublasDestroy", status);
+    if(cublas_Handle != nullptr) {
+      auto status = cublasDestroy(cublas_Handle);
+      CublasContext::ErrorCheck("cublasDestroy", status);
+    }
 }
 
 Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
@@ -122,7 +145,11 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
 
       buffer_len = entry.output->size();
 
+      FusionBufferManager buffer_manager;
+
       if(entry.tensor->data() == entry.output->data()) {
+          LOG(INFO, global_state_->rank)<<"Output and input pointing to same data. Creating temp buffer "<<std::this_thread::get_id();
+
           // Get the temp buffer to be used for the Op
           global_state_->buffer_lock.lock();
           assert(!global_state_->temp_buffers.empty());
@@ -143,14 +170,13 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
               throw std::logic_error("MsAllreduceOp::Execute_helper: Initialize buffer failed.");
               return;
           }
-
           auto& buffer = buffer_manager.GetBuffer(entry.device, entry.context->framework(), global_state_->current_nccl_stream);
           recv_buffer = const_cast<void*>(buffer->AccessData(entry.context));
       }
       else {
           recv_buffer = (void*) entry.output->data();
       }
-      LOG(INFO, global_state_->rank)<<"Begin to process gpu tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
+      LOG(INFO, global_state_->rank)<<"Begin to process gpu tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size()<<" "<<std::this_thread::get_id();
       
       MPI_Comm* node_comm = NULL;
       if (global_state_->rank_log_size != 0) {
@@ -159,7 +185,7 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
     
       // This will create a stream per layer.
       InitCUBLAS(entry, layerid);
-      LOG(INFO, global_state_->rank)<<"Begin processing gpu tensor in layer "<<layerid;
+      LOG(INFO, global_state_->rank)<<"Begin processing gpu tensor in layer "<<layerid<<" "<<std::this_thread::get_id();
       switch (entry.output->dtype()) {
           case HOROVOD_FLOAT16:
             MsAllreduce_Internal((uint16_t*) buffer_data,
@@ -214,7 +240,6 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
     std::this_thread::sleep_for(std::chrono::nanoseconds(50));
   }
   global_state_->finished_parallel_reductions = 0;
-
   return Status::OK();
 
 }
@@ -222,14 +247,13 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
 void MsCudaAllreduceOp::memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid) {
     assert(dest != nullptr);
     assert(src != nullptr);
-    LOG(INFO, global_state_->rank)<<"memcpyUtil GPU.";
+    LOG(INFO, global_state_->rank)<<"memcpyUtil GPU. "<<std::this_thread::get_id();
     auto cuda_result = cudaMemcpyAsync(dest, src,
                                     buffer_len, 
                                     cudaMemcpyDeviceToDevice,
-                                    cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
+                                    cuda_context_->streams[global_state_->current_nccl_stream][entry.device]);
     cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-    LOG(INFO, global_state_->rank)<<"memcpyUtil GPU OK.";
-    auto cuda_sync_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
+    auto cuda_sync_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][entry.device]);
     cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
 }
 
@@ -250,20 +274,20 @@ void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a,
   cudaDataType_t execution_type = isFloat16 ? CUDA_R_32F : cuda_type;
 
   LOG(INFO, global_state->rank)<<"computing a dot b";
-  auto adotbstatus = cublasDotEx(get_cublasHandle(), n, (void *)a, cuda_type, 1, (void *)b, cuda_type, 1, (void *)typed_dotProduct, cuda_type, execution_type);
+  auto adotbstatus = cublasDotEx(cublas_Handle, n, (void *)a, cuda_type, 1, (void *)b, cuda_type, 1, (void *)typed_dotProduct, cuda_type, execution_type);
   CublasContext::ErrorCheck("a cublasdot b", adotbstatus);
 
   LOG(INFO, global_state->rank)<<"computing a dot a";
-  auto adotastatus = cublasDotEx(get_cublasHandle(), n, (void *)a, cuda_type, 1, (void *)a, cuda_type, 1, (void *)typed_anormsq, cuda_type, execution_type);
+  auto adotastatus = cublasDotEx(cublas_Handle, n, (void *)a, cuda_type, 1, (void *)a, cuda_type, 1, (void *)typed_anormsq, cuda_type, execution_type);
   CublasContext::ErrorCheck("a cublasdot a", adotastatus);
 
   LOG(INFO, global_state->rank)<<"computing b dot b";
-  auto bdotbstatus = cublasDotEx(get_cublasHandle(), n, (void *)b, cuda_type, 1, (void *)b, cuda_type, 1, (void *)typed_bnormsq, cuda_type, execution_type);
+  auto bdotbstatus = cublasDotEx(cublas_Handle, n, (void *)b, cuda_type, 1, (void *)b, cuda_type, 1, (void *)typed_bnormsq, cuda_type, execution_type);
   CublasContext::ErrorCheck("b cublasdot b", bdotbstatus);
-  cudaDeviceSynchronize();
-  //TODO sync on the particular stream
-  //auto cuda_sync_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
-  //cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
+  cudaStream_t stream;
+  cublasGetStream(cublas_Handle, &stream);
+  auto cuda_sync_result = cudaStreamSynchronize(stream);
+  CUDAContext::ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
 
   //TODO the cast here is not helpful, this is just to keep the function signature consistent with CPU implementation.
   //If overflow happens, we have lost information already. Find a better way to control output type of the cublas calls.
@@ -300,18 +324,17 @@ void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, do
   cudaDataType_t cuda_type = CublasContext::GetCublasDataType(a);
   cudaDataType_t execution_type = cuda_type == CUDA_R_16F ? CUDA_R_32F : cuda_type;
   cudaDataType_t alpha_type = cuda_type == CUDA_R_64F ? CUDA_R_64F : CUDA_R_32F;
-
   float acoeff_float = (float)acoeff;
-  auto scaleStatus = cublasScalEx(get_cublasHandle(), n, &acoeff_float, alpha_type, (void *)a, cuda_type, 1, execution_type);
+  auto scaleStatus = cublasScalEx(cublas_Handle, n, &acoeff_float, alpha_type, (void *)a, cuda_type, 1, execution_type);
   CublasContext::ErrorCheck("cublasScalEx", scaleStatus);
   
   float bcoeff_float = (float)bcoeff;
-  auto axpyStatus = cublasAxpyEx(get_cublasHandle(), n, &bcoeff_float, alpha_type, (void *)b, cuda_type, 1, (void *)a, cuda_type, 1, execution_type);
+  auto axpyStatus = cublasAxpyEx(cublas_Handle, n, &bcoeff_float, alpha_type, (void *)b, cuda_type, 1, (void *)a, cuda_type, 1, execution_type);
   CublasContext::ErrorCheck("cublasAxpyEx", axpyStatus);
-  cudaDeviceSynchronize();
-  //TODO sync on the particular stream
-  //auto cuda_sync_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
-  //cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
+  cudaStream_t stream;
+  cublasGetStream(cublas_Handle, &stream);
+  auto cuda_sync_result = cudaStreamSynchronize(stream);
+  CUDAContext::ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
 }
 
 bool MsCudaAllreduceOp::Enabled(const ParameterManager& param_manager,

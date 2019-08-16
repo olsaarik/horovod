@@ -44,7 +44,7 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
       buffer_data = (void*) entry.tensor->data();
 
       buffer_len = entry.output->size();
-
+      FusionBufferManager buffer_manager;
       if(entry.tensor->data() == entry.output->data()) {
           // Get the temp buffer to be used for the Op
           global_state_->buffer_lock.lock();
@@ -162,6 +162,7 @@ void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buf
   MPI_Datatype mpi_type = mpi_context_->GetMPIDataType(entry.tensor);
   SyncLocalReduce(grad_buffer, recv_buffer, count, mpi_type, global_state_->local_comm, layerid, entry, dotProdFunc, scaleAddFunc);
   if (local_rank == 0 && node_comm != NULL) {
+    LOG(INFO, global_state_->rank)<<"Begin vhdd reduce "<<" "<<std::this_thread::get_id();
     SyncAllreduce(grad_buffer, recv_buffer, count, *node_comm, global_state_->reduction_comms, layerid, entry, dotProdFunc, scaleAddFunc);
   }
   SyncLocalBroadcast(grad_buffer, count, mpi_type, global_state_->local_comm, layerid);
@@ -276,6 +277,7 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
 
   int root_node_rotation = false ? (layerid % size) : 0;
   redn_rank = (true_rank ^ root_node_rotation);
+  LOG(INFO, global_state_->rank)<<"In local tree reduce "<<" "<<std::this_thread::get_id();
 
   // Do a tree reduction
   // The reduction ranks used are a permutation of true ranks (permuted based on layerid)
