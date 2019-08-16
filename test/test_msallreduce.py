@@ -15,24 +15,6 @@ from horovod.tensorflow import AllreduceType
 config = tf.ConfigProto()
 config.gpu_options.allow_growth = True
 
-# def parasail_reference_operation(a,b):
-#     assert a.size == b.size
-#     assert a.size > 0 and b.size > 0
-#     assert a.dtype == b.dtype
-#     # parasail logic in numpy
-#     anormsq = np.inner(a.ravel(), a.ravel())
-#     bnormsq = np.inner(b.ravel(), b.ravel())
-#     dotProduct = np.dot(a.ravel(), b.ravel())
-#     acoeff = 1.0
-#     bcoeff = 1.0
-#     if anormsq != 0:
-#         acoeff = 1.0 - dotProduct / anormsq * 0.5
-#     if bnormsq != 0:
-#         bcoeff = 1.0 - dotProduct / bnormsq * 0.5
-#     answer = acoeff * a + bcoeff * b
-#     return answer
-
-#BUGBUG
 def parasail_reference_operation(a,b):
     assert a.size == b.size
     assert a.size > 0 and b.size > 0
@@ -46,8 +28,8 @@ def parasail_reference_operation(a,b):
     if anormsq != 0:
         acoeff = 1.0 - dotProduct / anormsq * 0.5
     if bnormsq != 0:
-        bcoeff = 1.0 - dotProduct / bnormsq
-    answer = a + bcoeff * b
+        bcoeff = 1.0 - dotProduct / bnormsq * 0.5
+    answer = acoeff * a + bcoeff * b
     return answer
 
 class MPITests(tf.test.TestCase):
