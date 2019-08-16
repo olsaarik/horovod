@@ -73,64 +73,65 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
       else {
           recv_buffer = (void*) entry.output->data();
       }
-      LOG(INFO, global_state_->rank)<<"Begin to process tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
-      
-      MPI_Comm* node_comm = NULL;
-      if (global_state_->rank_log_size != 0) {
-          node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
-      }
+    LOG(INFO, global_state_->rank)<<"Begin to process tensor with size "<<entry.tensor->size()<<" into output buffer with size "<<entry.output->size();
+        
+    MPI_Comm* node_comm = NULL;
+    if (global_state_->rank_log_size != 0) {
+        node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
+    }
 
-      LOG(INFO, global_state_->rank)<<"Begin processing tensor in layer "<<layerid;
-      switch (entry.output->dtype()) {
-          case HOROVOD_FLOAT16:
-          //TODO new parasail
-            MsAllreduce_Internal((uint16_t*) buffer_data,
-                            (uint16_t*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrdsfp16,
-                            ScaledAddfp16);  
-          break;
-          case HOROVOD_FLOAT32:
-          //TODO new parasail
-            MsAllreduce_Internal((float*) buffer_data,
-                            (float*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<float>,
-                            ScaledAdd<float>);  
-          break;
-          case HOROVOD_FLOAT64:
-          //TODO new parasail
-            MsAllreduce_Internal((double*) buffer_data,
-                            (double*) recv_buffer,
-                            buffer_len,
-                            node_comm,
-                            layerid,
-                            entry,
-                            ComputeDotAndNormSqrds<double>,
-                            ScaledAdd<double>);  
-          
-          break;
-          default:
-              throw std::logic_error("MsAllreduceOp::Execute: Unsupported data type.");
-      }
-      LOG(INFO, global_state_->rank)<<"Done processing tensor in layer "<<layerid;
-      if(entry.tensor->data() == entry.output->data()) {
-        // Return the buffer back into the pool of available buffers
-        global_state_->buffer_lock.lock();
-        global_state_->temp_buffers.push(buffer_manager);
-        global_state_->buffer_lock.unlock();
-      }
+    LOG(INFO, global_state_->rank)<<"Begin processing tensor in layer "<<layerid;
+    switch (entry.output->dtype()) {
+        case HOROVOD_FLOAT16:
+        //TODO new parasail
+        MsAllreduce_Internal((uint16_t*) buffer_data,
+                        (uint16_t*) recv_buffer,
+                        buffer_len,
+                        node_comm,
+                        layerid,
+                        entry,
+                        ComputeDotAndNormSqrdsfp16,
+                        ScaledAddfp16);  
+        break;
+        case HOROVOD_FLOAT32:
+        //TODO new parasail
+        MsAllreduce_Internal((float*) buffer_data,
+                        (float*) recv_buffer,
+                        buffer_len,
+                        node_comm,
+                        layerid,
+                        entry,
+                        ComputeDotAndNormSqrds<float>,
+                        ScaledAdd<float>);  
+        break;
+        case HOROVOD_FLOAT64:
+        //TODO new parasail
+        MsAllreduce_Internal((double*) buffer_data,
+                        (double*) recv_buffer,
+                        buffer_len,
+                        node_comm,
+                        layerid,
+                        entry,
+                        ComputeDotAndNormSqrds<double>,
+                        ScaledAdd<double>);  
+        
+        break;
+        default:
+            throw std::logic_error("MsAllreduceOp::Execute: Unsupported data type.");
+    }
+    LOG(INFO, global_state_->rank)<<"Done processing tensor in layer "<<layerid;
+    if(entry.tensor->data() == entry.output->data()) {
+    // Return the buffer back into the pool of available buffers
+    global_state_->buffer_lock.lock();
+    global_state_->temp_buffers.push(buffer_manager);
+    global_state_->buffer_lock.unlock();
+    }
+    else {
+      memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size(), layerid);
+    }
+    LOG(INFO, global_state_->rank)<<"Finished ms allreduction, exiting operation";
 
-  memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size(), layerid);
-  LOG(INFO, global_state_->rank)<<"Finished ms allreduction, exiting operation";
-
-      global_state_->finished_parallel_reductions++;
+    global_state_->finished_parallel_reductions++;
     });
     layerid++;
   }

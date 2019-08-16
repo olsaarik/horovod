@@ -78,12 +78,12 @@ MsCudaAllreduceOp::MsCudaAllreduceOp(MPIContext* mpi_context, CUDAContext* cuda_
     : MsAllreduceOp(mpi_context, global_state), cuda_context_(cuda_context) {
     }
 
-void MsCudaAllreduceOp::InitCUBLAS(const TensorTableEntry& entry, int layerid) {
+void MsCudaAllreduceOp::InitCUDAandCUBLAS(const TensorTableEntry& entry, int layerid) {
   cuda_context_->ErrorCheck("cudaSetDevice", cudaSetDevice(entry.device));
 
   LOG(INFO, global_state_->rank)<<"Checking for existing stream for layer "<<layerid<<" "<<std::this_thread::get_id();
   // Ensure stream is in the map before executing reduction.
-  cudaStream_t& stream = cuda_context_->streams[global_state_->current_nccl_stream][layerid];
+  cudaStream_t& stream = cuda_context_->streams[global_state_->current_nccl_stream][layerid % global_state_->num_msallreduce_threads];
   if (stream == nullptr) {
 
     std::lock_guard<std::mutex> guard(global_state_->mutex);
@@ -117,7 +117,7 @@ void MsCudaAllreduceOp::InitCUBLAS(const TensorTableEntry& entry, int layerid) {
   LOG(INFO, global_state_->rank)<<"Successfully initialized cublas. "<<std::this_thread::get_id();
 }
 
-void MsCudaAllreduceOp::FinalizeCUBLAS() {
+void MsCudaAllreduceOp::FinalizeCUDAandCUBLAS() {
     if(cublas_Handle != nullptr) {
       auto status = cublasDestroy(cublas_Handle);
       CublasContext::ErrorCheck("cublasDestroy", status);
@@ -133,6 +133,7 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
   int layerid = 0;
   int num_reductions = entries.size();
   LOG(INFO, global_state_->rank)<<"Ready to process "<<num_reductions<<" tensors in gpu";
+  global_state_->finished_parallel_reductions = 0;
   for (auto& entry : entries) {
     boost::asio::post(*global_state_->background_thread_pool,
     [&return_statuses, this, &entry, response, layerid, &entries]
@@ -184,7 +185,7 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
       }
     
       // This will create a stream per layer.
-      InitCUBLAS(entry, layerid);
+      InitCUDAandCUBLAS(entry, layerid);
       LOG(INFO, global_state_->rank)<<"Begin processing gpu tensor in layer "<<layerid<<" "<<std::this_thread::get_id();
       switch (entry.output->dtype()) {
           case HOROVOD_FLOAT16:
@@ -228,10 +229,11 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
         global_state_->temp_buffers.push(buffer_manager);
         global_state_->buffer_lock.unlock();
       }
-
-      memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size(), layerid);
+      else {
+        memcpyUtil(entry, (void *) entry.output->data(), (void *) entry.tensor->data(), (size_t) entry.tensor->size(), layerid);
+      }
       LOG(INFO, global_state_->rank)<<"Finished ms gpu allreduction, exiting operation";
-      FinalizeCUBLAS();
+      FinalizeCUDAandCUBLAS();
       global_state_->finished_parallel_reductions++;
     });
     layerid++;
@@ -239,7 +241,6 @@ Status MsCudaAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const 
   while (global_state_->finished_parallel_reductions < num_reductions) {
     std::this_thread::sleep_for(std::chrono::nanoseconds(50));
   }
-  global_state_->finished_parallel_reductions = 0;
   return Status::OK();
 
 }

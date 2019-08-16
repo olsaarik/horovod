@@ -56,9 +56,9 @@ class MsCudaAllreduceOp : public MsAllreduceOp {
       return cublas_Handle;
   }
 
-  void InitCUBLAS(const TensorTableEntry& entry, int layerid);
+  void InitCUDAandCUBLAS(const TensorTableEntry& entry, int layerid);
 
-  void FinalizeCUBLAS();
+  void FinalizeCUDAandCUBLAS();
 
   void memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid) override;
 
