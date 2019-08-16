@@ -653,9 +653,10 @@ def get_common_options(build_ext):
         MACROS += [('HAVE_CUDA', '1')]
         INCLUDES += cuda_include_dirs
         SOURCES += ['horovod/common/ops/cuda_operations.cc',
-                    'horovod/common/ops/mpi_cuda_operations.cc']
+                    'horovod/common/ops/mpi_cuda_operations.cc',
+                    'horovod/common/ops/msallreduce_cuda_operations.cc']
         LIBRARY_DIRS += cuda_lib_dirs
-        LIBRARIES += ['cudart']
+        LIBRARIES += ['cudart', 'cublas']
 
     if have_nccl:
         MACROS += [('HAVE_NCCL', '1')]
@@ -794,9 +795,10 @@ def build_mx_extension(build_ext, options):
         options['MACROS'] += [('HAVE_CUDA', '1')]
         options['INCLUDES'] += cuda_include_dirs
         options['SOURCES'] += ['horovod/common/ops/cuda_operations.cc',
-                               'horovod/common/ops/mpi_cuda_operations.cc']
+                               'horovod/common/ops/mpi_cuda_operations.cc',
+                                'horovod/common/ops/msallreduce_cuda_operations.cc']
         options['LIBRARY_DIRS'] += cuda_lib_dirs
-        options['LIBRARIES'] += ['cudart']
+        options['LIBRARIES'] += ['cudart', 'cublas']
 
     mxnet_mpi_lib.define_macros = options['MACROS']
     if check_macro(options['MACROS'], 'HAVE_CUDA'):

@@ -48,6 +48,7 @@
 #include "timeline.h"
 
 #if HAVE_CUDA
+#include "ops/msallreduce_cuda_operations.h"
 #include "ops/cuda_operations.h"
 #include "ops/mpi_cuda_operations.h"
 #endif
@@ -152,13 +153,12 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
   std::vector<std::shared_ptr<BroadcastOp>> broadcast_ops;
   std::vector<std::shared_ptr<AllreduceOp>> msallreduce_ops;
 
-  // TODO: Do we still want to check for enabling this here? Probably want to add regardless
-  if (state.msallreduce_enabled == true){
-    LOG(INFO) << "msallreduce enabled.";
-    msallreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
-  }
 #if HAVE_CUDA
 #if HOROVOD_GPU_ALLREDUCE == 'M'
+  if (state.msallreduce_enabled == true){
+    LOG(INFO) << "msallGpureduce enabled.";
+    msallreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsCudaAllreduceOp(&mpi_context, &cuda_context, &state)));
+  }
   allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(
       new MPI_CUDAAllreduce(&mpi_context, &cuda_context, &state)));
 
@@ -181,6 +181,12 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
       new MPIHierarchicalAllgather(&mpi_context, &state)));
 #endif
 #endif
+
+//TODO remove this check once fully tested
+if (state.msallreduce_enabled == true){
+  LOG(INFO) << "msallreduce enabled.";
+  msallreduce_ops.push_back(std::shared_ptr<AllreduceOp>(new MsAllreduceOp(&mpi_context, &state)));
+}
 
 #if HAVE_GLOO
   if (strcasecmp(state.cpu_operation.c_str(), "gloo") == 0) {
@@ -1020,19 +1026,19 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
 
   // parasail new algo begin
   // TODO make this a condition and merge with horovod's hiearchical allreduce
-  if(state.msallreduce_enabled == true) {
-    //MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
-    //int ms_local_rank, ms_local_size;
-    //MPI_Comm_size(state.local_comm, &ms_local_size);
-    //MPI_Comm_rank(state.local_comm, &ms_local_rank);
-    if (true) //ms_local_rank == 0)
+if(state.msallreduce_enabled == true) {
+    MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &state.local_comm);
+    int ms_local_rank, ms_local_size;
+    MPI_Comm_size(state.local_comm, &ms_local_size);
+    MPI_Comm_rank(state.local_comm, &ms_local_rank);
+    if (ms_local_rank == 0)
     {
         int rank, size;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &size);
         // converting to node-based rank and size
-        ///rank /= ms_local_size;
-        //size /= ms_local_size;
+        rank /= ms_local_size;
+        size /= ms_local_size;
 
         MPI_Group world_group;
         MPI_Comm_group(MPI_COMM_WORLD, &world_group);
@@ -1053,7 +1059,7 @@ void BackgroundThreadLoop(HorovodGlobalState& state, MPIContext& ctx) {
             for (int i = 0; i < (level << 1); i++)
             {
                 // converting back to world rank
-	      node_rank[i] = (base_rank + i);// * ms_local_size;
+                node_rank[i] = (base_rank + i) * ms_local_size;
             }
             MPI_Group red_group;
             MPI_Group_incl(world_group, (level << 1), node_rank, &red_group);

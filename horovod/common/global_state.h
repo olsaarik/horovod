@@ -71,7 +71,10 @@ struct HorovodGlobalState {
 
   // Mutex to be used when accessing the queue of temp buffers
   std::mutex buffer_lock;
-  
+
+  // threads to be used for msallreduce operations
+  int num_msallreduce_threads;
+
   HorovodGlobalState() {
     auto horovod_number_of_threads = std::getenv(HOROVOD_NUMBER_OF_MPI_THREADS);
     auto msallreduce = std::getenv(HOROVOD_MSALLREDUCE_ENABLE);
@@ -95,12 +98,12 @@ struct HorovodGlobalState {
       //Making this static so that this pool is preverved throughout the lifetime of the program
       LOG(INFO)<<"Starting "<<num_threads<<" MPI threads for threadpool.";
       static boost::asio::thread_pool pool(num_threads);
+      num_msallreduce_threads = num_threads;
       // Create a buffer manager for temp buffers for each thread
       for (int i = 0; i < num_threads; ++i) {
         temp_buffers.emplace();
       }
       background_thread_pool = &pool;
-      finished_parallel_reductions = 0;
     }
   }
   
