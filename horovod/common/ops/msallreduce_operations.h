@@ -29,6 +29,8 @@
 #include "../mpi_context.h"
 #include "p2p_operations.h"
 
+//BUGBUG
+#include "../half.h"
 
 namespace horovod {
 namespace common {
@@ -58,72 +60,97 @@ protected:
 
   template<typename T, typename F, typename S>
   void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
-
+  //BUGBUG
   template<typename T>
-  void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid);
+  void static ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid);
   
   template<typename T, typename F, typename S>
   void PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
-
+  //BUGBUG
   template<typename T>
-  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid);  
+  void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state, int layerid);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrdsfp16(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
-      int i;
-      __m256d dotProductVec = _mm256_setzero_pd();
-      __m256d anormVec = _mm256_setzero_pd();
-      __m256d bnormVec = _mm256_setzero_pd();
-      for (i = 0; i < len - 7; i += 8) {
-          __m256 aVec = _mm_loadu_ph(&a[i]);
-          __m256 bVec = _mm_loadu_ph(&b[i]);
-          __m256d aBot = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 0));
-          __m256d aTop = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 1));
-          __m256d bBot = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 0));
-          __m256d bTop = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 1));
-          dotProductVec = _mm256_fmadd_pd(aBot, bBot, dotProductVec);
-          dotProductVec = _mm256_fmadd_pd(aTop, bTop, dotProductVec);
-          anormVec = _mm256_fmadd_pd(aBot, aBot, anormVec);
-          anormVec = _mm256_fmadd_pd(aTop, aTop, anormVec);
-          bnormVec = _mm256_fmadd_pd(bBot, bBot, bnormVec);
-          bnormVec = _mm256_fmadd_pd(bTop, bTop, bnormVec);
-      }
-      if (i < len) {
-          __m256 aVec = _mm_loadu_ph_partial(&a[i], len - i);
-          __m256 bVec = _mm_loadu_ph_partial(&b[i], len - i);
-        __m256d aBot = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 0));
-        __m256d aTop = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 1));
-        __m256d bBot = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 0));
-        __m256d bTop = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 1));
-          dotProductVec = _mm256_fmadd_pd(aBot, bBot, dotProductVec);
-          dotProductVec = _mm256_fmadd_pd(aTop, bTop, dotProductVec);
-          anormVec = _mm256_fmadd_pd(aBot, aBot, anormVec);
-          anormVec = _mm256_fmadd_pd(aTop, aTop, anormVec);
-          bnormVec = _mm256_fmadd_pd(bBot, bBot, bnormVec);
-          bnormVec = _mm256_fmadd_pd(bTop, bTop, bnormVec);
-      }
+  inline void static ComputeDotAndNormSqrdsfp16(const short unsigned int* __restrict__ a, const short unsigned int* __restrict__ b, int len, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state, int layerid) {
+        dotProduct = 0.;
+        anormsq = 0.;
+        bnormsq = 0.;
+        float afloat, bfloat;
+        for (int i = 0; i < len; i++) {
+            short unsigned int a_temp = a[i];
+            short unsigned int b_temp = b[i];
+            HalfBits2Float(&a_temp, &afloat);
+            HalfBits2Float(&b_temp, &bfloat);
+            dotProduct += afloat * bfloat;
+            anormsq += afloat * afloat;
+            bnormsq += bfloat * bfloat;
+        }
+
+    //   int i;
+    //   __m256d dotProductVec = _mm256_setzero_pd();
+    //   __m256d anormVec = _mm256_setzero_pd();
+    //   __m256d bnormVec = _mm256_setzero_pd();
+    //   for (i = 0; i < len - 7; i += 8) {
+    //       __m256 aVec = _mm_loadu_ph(&a[i]);
+    //       __m256 bVec = _mm_loadu_ph(&b[i]);
+    //       __m256d aBot = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 0));
+    //       __m256d aTop = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 1));
+    //       __m256d bBot = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 0));
+    //       __m256d bTop = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 1));
+    //       dotProductVec = _mm256_fmadd_pd(aBot, bBot, dotProductVec);
+    //       dotProductVec = _mm256_fmadd_pd(aTop, bTop, dotProductVec);
+    //       anormVec = _mm256_fmadd_pd(aBot, aBot, anormVec);
+    //       anormVec = _mm256_fmadd_pd(aTop, aTop, anormVec);
+    //       bnormVec = _mm256_fmadd_pd(bBot, bBot, bnormVec);
+    //       bnormVec = _mm256_fmadd_pd(bTop, bTop, bnormVec);
+    //   }
+    //   if (i < len) {
+    //       __m256 aVec = _mm_loadu_ph_partial(&a[i], len - i);
+    //       __m256 bVec = _mm_loadu_ph_partial(&b[i], len - i);
+    //     __m256d aBot = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 0));
+    //     __m256d aTop = _mm256_cvtps_pd(_mm256_extractf128_ps(aVec, 1));
+    //     __m256d bBot = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 0));
+    //     __m256d bTop = _mm256_cvtps_pd(_mm256_extractf128_ps(bVec, 1));
+    //       dotProductVec = _mm256_fmadd_pd(aBot, bBot, dotProductVec);
+    //       dotProductVec = _mm256_fmadd_pd(aTop, bTop, dotProductVec);
+    //       anormVec = _mm256_fmadd_pd(aBot, aBot, anormVec);
+    //       anormVec = _mm256_fmadd_pd(aTop, aTop, anormVec);
+    //       bnormVec = _mm256_fmadd_pd(bBot, bBot, bnormVec);
+    //       bnormVec = _mm256_fmadd_pd(bTop, bTop, bnormVec);
+    //   }
   
-      dotProduct = _mm256Reduction_pd(dotProductVec);
-      anormsq = _mm256Reduction_pd(anormVec);
-      bnormsq = _mm256Reduction_pd(bnormVec);
+    //   dotProduct = _mm256Reduction_pd(dotProductVec);
+    //   anormsq = _mm256Reduction_pd(anormVec);
+    //   bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void static ScaledAddfp16(int len, double acoeff, uint16_t* __restrict__ a, double bcoeff, uint16_t* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
-      int i;
-      __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
-      __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
-      for (i = 0; i < len - 7; i += 8) {
-          __m256 aVec = _mm_loadu_ph(&a[i]);
-          __m256 bVec = _mm_loadu_ph(&b[i]);
-          aVec = _mm256_mul_ps(acoeffVec, aVec);
-          _mm_store_ph(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec));
-      }
-      if (i < len) {
-          __m256 aVec = _mm_loadu_ph_partial(&a[i], len - i);
-          __m256 bVec = _mm_loadu_ph_partial(&b[i], len - i);
-          aVec = _mm256_mul_ps(acoeffVec, aVec);
-          _mm_store_ph_partial(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec), len - i);
-      }
+  inline void static ScaledAddfp16(int len, float acoeff, short unsigned int* __restrict__ a, float bcoeff, short unsigned int* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
+    float afloat,bfloat;
+    for (int i = 0; i < len; i++) {
+        short unsigned int a_temp = a[i];
+        short unsigned int b_temp = b[i];
+        HalfBits2Float(&a_temp, &afloat);
+        HalfBits2Float(&b_temp, &bfloat);
+        float result = acoeff * afloat + bcoeff * bfloat;
+        Float2HalfBits(&result, &a[i]);
+        //a[i] = acoeff * afloat + bcoeff * bfloat;
+    }
+
+    //   int i;
+    //   __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
+    //   __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
+    //   for (i = 0; i < len - 7; i += 8) {
+    //       __m256 aVec = _mm_loadu_ph(&a[i]);
+    //       __m256 bVec = _mm_loadu_ph(&b[i]);
+    //       aVec = _mm256_mul_ps(acoeffVec, aVec);
+    //       _mm_store_ph(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec));
+    //   }
+    //   if (i < len) {
+    //       __m256 aVec = _mm_loadu_ph_partial(&a[i], len - i);
+    //       __m256 bVec = _mm_loadu_ph_partial(&b[i], len - i);
+    //       aVec = _mm256_mul_ps(acoeffVec, aVec);
+    //       _mm_store_ph_partial(&a[i], _mm256_fmadd_ps(bcoeffVec, bVec, aVec), len - i);
+    //   }
   }
 
   void virtual memcpyUtil(TensorTableEntry entry, void* dest, void* src, size_t buffer_len, int layerid);

@@ -84,14 +84,14 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
     switch (entry.output->dtype()) {
         case HOROVOD_FLOAT16:
         //TODO new parasail
-        MsAllreduce_Internal((uint16_t*) buffer_data,
-                        (uint16_t*) recv_buffer,
+        MsAllreduce_Internal((short unsigned int*) buffer_data,
+                        (short unsigned int*) recv_buffer,
                         buffer_len,
                         node_comm,
                         layerid,
                         entry,
                         ComputeDotAndNormSqrdsfp16,
-                        ScaledAddfp16);  
+                        ScaledAddfp16);
         break;
         case HOROVOD_FLOAT32:
         //TODO new parasail
@@ -170,12 +170,11 @@ void MsAllreduceOp::MsAllreduce_Internal(T* grad_buffer, T* recv_buffer, int buf
 }
 
 template<typename T>
-void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
+void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, float& dotProduct, float& anormsq, float& bnormsq, HorovodGlobalState *global_state, int layerid) {
     dotProduct = 0.;
     anormsq = 0.;
     bnormsq = 0.;
     LOG(INFO, global_state->rank)<<"Entering ComputeDotAndNormSqrds";
-
     for (int i = 0; i < n; i++) {
         dotProduct += a[i] * b[i];
         anormsq += a[i] * a[i];
@@ -185,7 +184,7 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
 }
 
 template<typename T>
-void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
+void MsAllreduceOp::ScaledAdd(int n, float acoeff, T* __restrict__ a, float bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
     for (int i = 0; i < n; i++) {
         a[i] = acoeff * a[i] + bcoeff * b[i];
     }
@@ -193,14 +192,14 @@ void MsAllreduceOp::ScaledAdd(int n, double acoeff, T* __restrict__ a, double bc
 
 template<typename T, typename F, typename S>
 void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc) {
-    double dotProduct = 0.;
-    double anormsq = 0.;
-    double bnormsq = 0.;
+    float dotProduct = 0.;
+    float anormsq = 0.;
+    float bnormsq = 0.;
 
     LOG(INFO, global_state_->rank)<<"Computing dot product.";
     dotProdFunc(a, b, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
     LOG(INFO, global_state_->rank)<<"Computed dot product.";
-    double reduce_vals[3];
+    float reduce_vals[3];
     if (isLeftNeighbor) { 
         reduce_vals[0] = anormsq;
         reduce_vals[1] = bnormsq;
@@ -210,7 +209,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
     }
     reduce_vals[2] = dotProduct;
     // TODO replace this with something else
-    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_FLOAT, MPI_SUM, comm);
     LOG(INFO, global_state_->rank)<<"Performed mpi allreduce.";
 
     if (isLeftNeighbor) { 
@@ -222,8 +221,8 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
     }
     dotProduct = reduce_vals[2];
 
-    double acoeff = 1;
-    double bcoeff = 1;
+    float acoeff = 1;
+    float bcoeff = 1;
     if (anormsq >= 1e-5)
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
     if (bnormsq >= 1e-5)
@@ -302,15 +301,15 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
       // BUGBUG
       MPI_Recv(recv_buffer, count*sizeof(T), MPI_CHAR, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
       
-      double anormsq = 0, bnormsq = 0, dotProduct = 0;
+      float anormsq = 0, bnormsq = 0, dotProduct = 0;
       dotProdFunc(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
       
-      double acoeff = 1;
-      double bcoeff = 1;
+      float acoeff = 1;
+      float bcoeff = 1;
       //BUGBUG
-      if (std::abs(anormsq) >= 1e-18f)
+      if (anormsq >= 1e-5f)
 	    acoeff = 1.0 - dotProduct / anormsq * 0.5;
-      if (std::abs(bnormsq) >= 1e-18f)
+      if (bnormsq >= 1e-5f)
 	    bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
       scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_, layerid);
