@@ -224,9 +224,9 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
 
     double acoeff = 1;
     double bcoeff = 1;
-    if (anormsq != 0)
+    if (anormsq >= 1e-18f)
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
-    if (bnormsq != 0)
+    if (bnormsq >= 1e-18f)
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
     // a = acoeff * a + bcoeff * b
@@ -308,9 +308,9 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
       double acoeff = 1;
       double bcoeff = 1;
       //BUGBUG
-      if (anormsq >= 1e-5)
+      if (anormsq >= 1e-18f)
 	    acoeff = 1.0 - dotProduct / anormsq * 0.5;
-      if (bnormsq >= 1e-5)
+      if (bnormsq >= 1e-18f)
 	    bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
       scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_, layerid);
