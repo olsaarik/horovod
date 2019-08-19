@@ -84,14 +84,14 @@ Status MsAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, const Resp
     switch (entry.output->dtype()) {
         case HOROVOD_FLOAT16:
         //TODO new parasail
-        MsAllreduce_Internal((uint16_t*) buffer_data,
-                        (uint16_t*) recv_buffer,
+        MsAllreduce_Internal((short unsigned int*) buffer_data,
+                        (short unsigned int*) recv_buffer,
                         buffer_len,
                         node_comm,
                         layerid,
                         entry,
                         ComputeDotAndNormSqrdsfp16,
-                        ScaledAddfp16);  
+                        ScaledAddfp16);
         break;
         case HOROVOD_FLOAT32:
         //TODO new parasail
@@ -175,7 +175,6 @@ void MsAllreduceOp::ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __
     anormsq = 0.;
     bnormsq = 0.;
     LOG(INFO, global_state->rank)<<"Entering ComputeDotAndNormSqrds";
-
     for (int i = 0; i < n; i++) {
         dotProduct += a[i] * b[i];
         anormsq += a[i] * a[i];
@@ -210,7 +209,7 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
     }
     reduce_vals[2] = dotProduct;
     // TODO replace this with something else
-    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_FLOAT, MPI_SUM, comm);
     LOG(INFO, global_state_->rank)<<"Performed mpi allreduce.";
 
     if (isLeftNeighbor) { 

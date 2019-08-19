@@ -29,6 +29,8 @@
 #include "../mpi_context.h"
 #include "p2p_operations.h"
 
+//BUGBUG
+#include "../half.h"
 
 namespace horovod {
 namespace common {
@@ -58,18 +60,19 @@ protected:
 
   template<typename T, typename F, typename S>
   void SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int layerid, TensorTableEntry entry, F dotProdFunc, S scaleAddFunc);
-
+  //BUGBUG
   template<typename T>
   void static ScaledAdd(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid);
   
   template<typename T, typename F, typename S>
   void PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor, F dotProdFunc, S scaleAddFunc);
-
+  //BUGBUG
   template<typename T>
   void static ComputeDotAndNormSqrds(const T* __restrict__  a, const T* __restrict__ b, int n, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid);  
   
   // TODO over-write ComputeDotAndNormSqrds for float16
-  inline void static ComputeDotAndNormSqrdsfp16(const uint16_t* __restrict__ a, const uint16_t* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
+  inline void static ComputeDotAndNormSqrdsfp16(const short unsigned int* __restrict__ a, const short unsigned int* __restrict__ b, int len, double& dotProduct, double& anormsq, double& bnormsq, HorovodGlobalState *global_state, int layerid) {
+
       int i;
       __m256d dotProductVec = _mm256_setzero_pd();
       __m256d anormVec = _mm256_setzero_pd();
@@ -108,7 +111,8 @@ protected:
       bnormsq = _mm256Reduction_pd(bnormVec);
   }
 
-  inline void static ScaledAddfp16(int len, double acoeff, uint16_t* __restrict__ a, double bcoeff, uint16_t* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
+  inline void static ScaledAddfp16(int len, double acoeff, short unsigned int* __restrict__ a, double bcoeff, short unsigned int* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
+
       int i;
       __m256 acoeffVec = _mm256_set1_ps((float)(acoeff));
       __m256 bcoeffVec = _mm256_set1_ps((float)bcoeff);
