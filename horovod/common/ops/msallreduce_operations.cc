@@ -307,9 +307,10 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
       
       double acoeff = 1;
       double bcoeff = 1;
-      if (anormsq >= 1e-8)
+      //BUGBUG
+      if (anormsq >= 1e-5)
 	    acoeff = 1.0 - dotProduct / anormsq * 0.5;
-      if (bnormsq >= 1e-8)
+      if (bnormsq >= 1e-5)
 	    bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
       scaleAddFunc(count, acoeff, grad_buffer, bcoeff, recv_buffer, global_state_, layerid);
