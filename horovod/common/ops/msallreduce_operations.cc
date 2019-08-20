@@ -224,9 +224,9 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
 
     double acoeff = 1;
     double bcoeff = 1;
-    if (anormsq != 0)
+    if (anormsq >= 1e-8f)
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
-    if (bnormsq != 0)
+    if (bnormsq >= 1e-8f)
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
     // a = acoeff * a + bcoeff * b
@@ -259,11 +259,11 @@ void MsAllreduceOp::SyncLocalBroadcast(T *grad_buffer, int count, MPI_Datatype m
     if ((redn_rank & level) == 0) {
       // send grad_buffer to neighbor
       // and dont wait for the send to finish
-      MPI_Send(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator);
+      MPI_Send(grad_buffer, count * sizeof(T), MPI_CHAR, neighbor_true_rank, layerid, communicator);
     }
     else {
       // recv grad_buffer from neighbor
-      MPI_Recv(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(grad_buffer, count * sizeof(T), MPI_CHAR, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
     }
   }
 }
@@ -298,7 +298,7 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
     
     if ((redn_rank & level) == 0) {
       // recv buffer from neighbor
-      MPI_Recv(recv_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
+      MPI_Recv(recv_buffer, count * sizeof(T), MPI_CHAR, neighbor_true_rank, layerid, communicator, MPI_STATUS_IGNORE);
       
       double anormsq = 0, bnormsq = 0, dotProduct = 0;
       dotProdFunc(grad_buffer, recv_buffer, count, dotProduct, anormsq, bnormsq, global_state_, layerid);
@@ -314,7 +314,7 @@ void MsAllreduceOp::SyncLocalReduce(T *grad_buffer, T *recv_buffer, int count, M
     }
     else {
       // send grad_buffer to neighbor
-      MPI_Send(grad_buffer, count, mpi_type, neighbor_true_rank, layerid, communicator);
+      MPI_Send(grad_buffer, count * sizeof(T), MPI_CHAR, neighbor_true_rank, layerid, communicator);
     }
   }
 }
