@@ -14,12 +14,18 @@
 // limitations under the License.
 // =============================================================================
 
-#include "p2p_operations.h"
+#include "mpi_p2p_operations.h"
 
 namespace horovod {
 namespace common {
 
-PointToPointOp::PointToPointOp(HorovodGlobalState* global_state)
-    : AllreduceOp(global_state) {}
+MPIPointToPointOp::MPIPointToPointOp(MPIContext* mpi_context, HorovodGlobalState* global_state)
+    : PointToPointOp(global_state), mpi_context_(mpi_context) {}
+
+bool MPIPointToPointOp::Enabled(const ParameterManager& param_manager,
+                                const std::vector<TensorTableEntry>& entries,
+                                const Response& response) const {
+  return true;
+}
 } // namespace common
 } // namespace horovod

@@ -19,11 +19,8 @@
 
 #include <iostream>
 
-#include "mpi.h"
-
 #include "../common.h"
 #include "../global_state.h"
-#include "../mpi_context.h"
 #include "collective_operations.h"
 
 
@@ -32,89 +29,12 @@ namespace common {
 
 class PointToPointOp : public AllreduceOp {
 public:
-  PointToPointOp(MPIContext* mpi_context, HorovodGlobalState* global_state);
+  PointToPointOp(HorovodGlobalState* global_state);
 
   virtual ~PointToPointOp() = default;
 
-  bool Enabled(const ParameterManager& param_manager,
-               const std::vector<TensorTableEntry>& entries,
-               const Response& response) const override;
-
 protected:
-  MPIContext* mpi_context_;
-  template<class T>
-  void PointToPointSend(T* input_data_buffer,
-                        int64_t buffer_length,
-                        int dest_rank,
-                        int tag,
-                        Communicator communicator) {
-    int status;                       
-    if (!global_state_->msg_chunk_enabled) {
-        LOG(INFO, global_state_->rank)<<std::this_thread::get_id()<<" begin p2p send for tag: "<<tag;
-        status = MPI_Send(input_data_buffer,
-                          (int)buffer_length,
-                          MPI_CHAR,
-                          dest_rank,
-                          tag,
-                          mpi_context_->GetMPICommunicator(communicator));
-        LOG(INFO, global_state_->rank)<<std::this_thread::get_id()<<" end p2p send for tag: "<<tag;
-
-    }
-    else {
-          const int chunk_size = P2P_MESSAGE_CHUNK_SIZE / sizeof(T);
-          for (int buf_index = 0; buf_index < buffer_length; buf_index += chunk_size) {
-            status = MPI_Send((uint8_t *)input_data_buffer + buf_index,
-                              std::min((int)buffer_length - buf_index, chunk_size) * sizeof(T),
-                              MPI_CHAR,
-                              dest_rank,
-                              tag,
-                              mpi_context_->GetMPICommunicator(communicator));
-            status &= status;
-          }
-    }
-
-    if (status != MPI_SUCCESS) {
-      throw std::logic_error("MPI_Send failed, see MPI output for details.");
-    }
-  }
-
-  template<class T>
-  void PointToPointRecv(T* output_data_buffer,
-                        int64_t buffer_length,
-                        int src_rank,
-                        int tag,
-                        Communicator communicator) {
-    int status;
-    if (!global_state_->msg_chunk_enabled) {
-        LOG(INFO, global_state_->rank)<<std::this_thread::get_id()<<" begin p2p recv for tag: "<<tag;
-        status = MPI_Recv(output_data_buffer,
-                          (int)buffer_length,
-                          MPI_CHAR,
-                          src_rank,
-                          tag,
-                          mpi_context_->GetMPICommunicator(communicator),
-                          MPI_STATUS_IGNORE);
-        LOG(INFO, global_state_->rank)<<std::this_thread::get_id()<<" end p2p recv for tag: "<<tag;
-    }
-    else {
-          const int chunk_size = P2P_MESSAGE_CHUNK_SIZE / sizeof(T);
-          for (int buf_index = 0; buf_index < buffer_length; buf_index += chunk_size) {
-            status = MPI_Recv((uint8_t *)output_data_buffer + buf_index,
-                              std::min((int)buffer_length - buf_index, chunk_size) * sizeof(T),
-                              MPI_CHAR,
-                              src_rank,
-                              tag,
-                              mpi_context_->GetMPICommunicator(communicator),
-                              MPI_STATUS_IGNORE);
-            status &= status;
-          }
-    }
-
-    if (status != MPI_SUCCESS) {
-      throw std::logic_error("MPI_Recv failed, see MPI output for details.");
-    }
-  }
-
+//TODO provide interfaces for other communication libraries
 };
 
 } // namespace common

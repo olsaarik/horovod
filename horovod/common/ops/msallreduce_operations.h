@@ -27,13 +27,13 @@
 #include "../common.h"
 #include "../global_state.h"
 #include "../mpi_context.h"
-#include "p2p_operations.h"
+#include "mpi_p2p_operations.h"
 
 
 namespace horovod {
 namespace common {
 
-class MsAllreduceOp : public PointToPointOp {
+class MsAllreduceOp : public MPIPointToPointOp {
 public:
   MsAllreduceOp(MPIContext* mpi_context, HorovodGlobalState* global_state);
 

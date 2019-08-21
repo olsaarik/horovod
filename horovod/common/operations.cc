@@ -41,7 +41,6 @@
 #include "mpi_context.h"
 #include "operations.h"
 #include "ops/mpi_operations.h"
-#include "ops/p2p_operations.h"
 #include "ops/msallreduce_operations.h"
 #include "ops/operation_manager.h"
 #include "parameter_manager.h"
