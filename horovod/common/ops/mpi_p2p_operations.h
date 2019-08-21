@@ -83,24 +83,24 @@ protected:
     level /= 2; // this make sure that level < size
 
     for (; level > 0; level /= 2) {
-    int neighbor_redn_rank = redn_rank ^ level;
-    int neighbor_true_rank = (neighbor_redn_rank ^ root_node_rotation);
+      int neighbor_redn_rank = redn_rank ^ level;
+      int neighbor_true_rank = (neighbor_redn_rank ^ root_node_rotation);
 
-    if (redn_rank % level != 0)
-    continue; // stay idle at this level
+      if (redn_rank % level != 0)
+      continue; // stay idle at this level
 
-    if (neighbor_redn_rank >= size)
-    continue; // no neighbor and so stay idle at this level
+      if (neighbor_redn_rank >= size)
+      continue; // no neighbor and so stay idle at this level
 
-    if ((redn_rank & level) == 0) {
-    // send grad_buffer to neighbor
-    // and dont wait for the send to finish
-    PointToPointSend(grad_buffer, buffer_length, neighbor_true_rank, message_tag, communicator);
-    }
-    else {
-    // recv grad_buffer from neighbor
-    PointToPointRecv(grad_buffer, buffer_length, neighbor_true_rank, message_tag, communicator);
-    }
+      if ((redn_rank & level) == 0) {
+      // send grad_buffer to neighbor
+      // and dont wait for the send to finish
+      PointToPointSend(grad_buffer, buffer_length, neighbor_true_rank, message_tag, communicator);
+      }
+      else {
+      // recv grad_buffer from neighbor
+      PointToPointRecv(grad_buffer, buffer_length, neighbor_true_rank, message_tag, communicator);
+      }
     }
   }
 

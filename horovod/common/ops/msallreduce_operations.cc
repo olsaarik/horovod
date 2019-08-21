@@ -210,7 +210,8 @@ void MsAllreduceOp::PairwiseReduceWithComm(T* a, T* b, int count, int layerid, M
     }
     reduce_vals[2] = dotProduct;
     // TODO replace this with something else
-    MpiP2pAllreduce(reduce_vals, temp_buffer, sizeof(reduce_vals), comm, layerid);
+    //MpiP2pAllreduce(reduce_vals, temp_buffer, sizeof(reduce_vals), comm, layerid);
+    MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM,comm);
     LOG(INFO, global_state_->rank)<<"Performed mpi allreduce.";
 
     if (isLeftNeighbor) { 
