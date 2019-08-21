@@ -522,8 +522,6 @@ ResponseList FuseResponses(std::deque<Response>& responses,
                            HorovodGlobalState& state, MPIContext& ctx) {
   ResponseList response_list;
   {
-    // Protect access to tensor table.
-    std::lock_guard<std::mutex> guard(horovod_global.mutex);
     //TODO consider to blend this logic into regular response fusion
     if(state.msallreduce_enabled == true){
       auto queue_size = responses.size();
@@ -537,7 +535,6 @@ ResponseList FuseResponses(std::deque<Response>& responses,
         // we find the first allreduce response and make it the host for all subsequent to-be-reduced tensors
         if (first_response.response_type() == Response::ResponseType::MSALLREDUCE) {
           // increment iterator since we have found one allreduce
-          LOG(INFO, state.rank)<<"Found 1 Allreduce request.";
           allreduce_merged = true;
           itr++;
           while(itr < queue_size) {
@@ -566,7 +563,9 @@ ResponseList FuseResponses(std::deque<Response>& responses,
     }
     // At the end of this loop, all allreduce responses should be taken out. Responses only contain non-allreduce responses.
     // It's safe to proceed to the response fusion.
-
+    
+    // Protect access to tensor table.
+    std::lock_guard<std::mutex> guard(horovod_global.mutex);
     while (!responses.empty()) {
 
       auto response = responses.front();
@@ -766,7 +765,6 @@ void PerformOperation(TensorTable& tensor_table, Response response, HorovodGloba
     if (e.ready_event != nullptr) {
       timeline.ActivityStart(e.tensor_name, WAIT_FOR_DATA);
       waiting_tensors.push_back(e);
-      LOG(INFO, state.rank)<<"adding waiting tensor.";
     }
   }
   while (!waiting_tensors.empty()) {
@@ -775,7 +773,6 @@ void PerformOperation(TensorTable& tensor_table, Response response, HorovodGloba
         timeline.ActivityEnd(it->tensor_name);
         timeline.ActivityStart(it->tensor_name, WAIT_FOR_OTHER_TENSOR_DATA);
         it = waiting_tensors.erase(it);
-        LOG(INFO, state.rank)<<"Erased a ready tensor.";
       } else {
         ++it;
       }
@@ -1929,7 +1926,6 @@ Status EnqueueTensorAllreduce(std::shared_ptr<OpContext> context,
   message.set_tensor_type(tensor->dtype());
   message.set_device(device);
   if (allreduce_type == AllreduceType::MS_ALLREDUCE) {
-    LOG(INFO, "Queued up an msallreduce request");
     message.set_request_type(Request::MSALLREDUCE);
   } else {
     message.set_request_type(Request::ALLREDUCE);
