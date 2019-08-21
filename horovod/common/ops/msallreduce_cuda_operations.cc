@@ -15,6 +15,7 @@
 // =============================================================================
 
 #include "msallreduce_cuda_operations.h"
+#include "msallreduce_cuda_kernels.h"
 #include <boost/asio/post.hpp>
 
 namespace horovod {
@@ -74,6 +75,10 @@ cudaDataType_t CublasContext::GetCublasDataType(T* variable) {
 
 thread_local cublasHandle_t MsCudaAllreduceOp::cublas_Handle;
 
+thread_local double* MsCudaAllreduceOp::device_normsq_memory_a = NULL;
+thread_local double* MsCudaAllreduceOp::device_normsq_memory_b = NULL;
+thread_local double* MsCudaAllreduceOp::device_dot_product_memory = NULL;
+
 MsCudaAllreduceOp::MsCudaAllreduceOp(MPIContext* mpi_context, CUDAContext* cuda_context, HorovodGlobalState* global_state)
     : MsAllreduceOp(mpi_context, global_state), cuda_context_(cuda_context) {
     }
@@ -94,6 +99,13 @@ void MsCudaAllreduceOp::InitCUDAandCUBLAS(const TensorTableEntry& entry, int lay
                                 cudaDeviceGetStreamPriorityRange(NULL, &greatest_priority));
       cuda_context_->ErrorCheck("cudaStreamCreateWithPriority",
                                 cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatest_priority));
+
+      cuda_context_->ErrorCheck("cudaMalloc",
+                                cudaMalloc(&device_normsq_memory_a, sizeof(double)));
+      cuda_context_->ErrorCheck("cudaMalloc",
+                                cudaMalloc(&device_normsq_memory_b, sizeof(double)));
+      cuda_context_->ErrorCheck("cudaMalloc",
+                                cudaMalloc(&device_dot_product_memory, sizeof(double)));
     }
   }
   cudaStream_t& device_stream = cuda_context_->streams[global_state_->current_nccl_stream][entry.device];
@@ -267,6 +279,24 @@ void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a,
                                        double& bnormsq, 
                                        HorovodGlobalState *global_state,
                                        int layerid) {
+  CudaDotProductImpl(n, a, b, device_normsq_memory_a, device_normsq_memory_b, device_dot_product_memory);
+}
+
+template<typename T>
+void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
+  CudaScaleAddImpl(n, a, b, acoeff, bcoeff);
+}
+
+/*
+template<typename T>
+void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a, 
+                                       const T* __restrict__ b, 
+                                       int n, 
+                                       double& dotProduct, 
+                                       double& anormsq, 
+                                       double& bnormsq, 
+                                       HorovodGlobalState *global_state,
+                                       int layerid) {
   uint8_t* typed_dotProduct = new uint8_t(sizeof(T));
   uint8_t* typed_anormsq = new uint8_t(sizeof(T));
   uint8_t* typed_bnormsq = new uint8_t(sizeof(T));
@@ -317,6 +347,7 @@ void MsCudaAllreduceOp::DotProductImpl(const T* __restrict__  a,
   delete typed_bnormsq;
 }
 
+
 template<typename T>
 void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, double bcoeff, T* __restrict__ b, HorovodGlobalState *global_state, int layerid) {
 
@@ -337,6 +368,7 @@ void MsCudaAllreduceOp::ScaleAddImpl(int n, double acoeff, T* __restrict__ a, do
   auto cuda_sync_result = cudaStreamSynchronize(stream);
   CUDAContext::ErrorCheck("cudaStreamSynchronize", cuda_sync_result);
 }
+*/
 
 bool MsCudaAllreduceOp::Enabled(const ParameterManager& param_manager,
                             const std::vector<TensorTableEntry>& entries,
