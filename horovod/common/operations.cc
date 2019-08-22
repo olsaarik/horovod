@@ -1789,7 +1789,7 @@ bool RunLoopOnce(HorovodGlobalState& state, MPIContext& ctx,
     // All workers add supported responses to cache. This updates the cache
     // order consistently across workers.
     for (auto& response : response_list.responses()) {
-      if ((response.response_type() == Response::ResponseType::ALLREDUCE) &&
+      if ((response.response_type() == Response::ResponseType::ALLREDUCE || response.response_type() == Response::ResponseType::MSALLREDUCE) &&
           (int)response.devices().size() == state.size) {
         state.response_cache.put(response, state.tensor_table);
       }
