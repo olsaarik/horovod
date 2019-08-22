@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <cuda_fp16.h>
 #include <time.h>
+#include <stdint.h>
 
 #define THREADS_PER_BLOCK 64
 
