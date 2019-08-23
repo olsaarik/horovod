@@ -171,7 +171,7 @@ Status MsCudaRingAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, co
       std::unique_ptr<char[]> recv_buffer(new char[buffer_len]);
 
       // wait for this layer to finish copying to host
-      cuda_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
+      auto cuda_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
       cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_result);
 
       MPI_Comm* node_comm = &global_state_->reduction_comms[global_state_->rank_log_size-1];
@@ -224,7 +224,7 @@ Status MsCudaRingAllreduceOp::Execute(std::vector<TensorTableEntry>& entries, co
 
     // wait for all copies to device to finish
     for (size_t layerid = 0; layerid < entries.size(); ++layerid) {
-      cuda_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
+      auto cuda_result = cudaStreamSynchronize(cuda_context_->streams[global_state_->current_nccl_stream][layerid]);
       cuda_context_->ErrorCheck("cudaStreamSynchronize", cuda_result);
     }
   }
