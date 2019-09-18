@@ -169,25 +169,6 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
   void* buffer_data;
   size_t buffer_len;
 
-  // Copy memory into the fusion buffer.
-  if (entries.size() > 1) {
-    throw std::logic_error("Foo");
-    MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
-
-    if (global_state_->timeline.Initialized()) {
-      cuda_context_->RecordEvent(event_queue_, MEMCPY_IN_FUSION_BUFFER, *stream_);
-    }
-  } else {
-    fused_input_data = first_entry.tensor->data();
-    buffer_data = (void*) first_entry.output->data();
-    buffer_len = (size_t) first_entry.output->size();
-  }
-
-  int64_t num_elements = 0;
-  for (auto& e : entries) {
-    num_elements += e.tensor->shape().num_elements();
-  }
-
   // Do allreduce.
   // int element_size = mpi_context_->GetMPITypeSize(first_entry.tensor->dtype());
   // int local_size = global_state_->controller->GetLocalSize();
@@ -248,64 +229,96 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
   // int64_t total_buffer_len = is_root_rank
   //                                ? buffer_len_per_rank + buffer_len_remaining
   //                                : buffer_len_per_rank;
-
-  auto& timeline = global_state_->timeline;
-  auto nccl_result = ncclReduce(fused_input_data,
-				buffer_data,
-				(size_t) num_elements,
-				GetNCCLDataType(first_entry.tensor),
-				ncclSum, 0, *nccl_comm_, *stream_);
-  nccl_context_->ErrorCheck("ncclAllreduce", nccl_result);
-  if (global_state_->timeline.Initialized()) {
-    cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
-  }
-
-  bool is_root_rank = global_state_->local_rank == 0;
+  
   static std::vector<char> tmpdata;
-  if (is_root_rank) {
-    tmpdata.resize(buffer_len);
+  
+  for (auto& e : entries) {
+    fused_input_data = e.tensor->data();
+    buffer_data = (void*) e.output->data();
+    buffer_len = (size_t) e.output->size();
+    int num_elements = e.tensor->shape().num_elements();
 
-    void * host_buffer_ = (void *) tmpdata.data();
-    // Synchronize.
-    cuda_context_->WaitForEvents(event_queue_, entries, timeline);
-    // According to https://docs.nvidia.com/cuda/cuda-runtime-api/
-    // api-sync-behavior.html#api-sync-behavior__memcpy-async,
-    // cudaMemcpyAsync is synchronous with respect to the host, so we
-    // memcpy (effectively) synchronously to generate an accurate timeline
-    timeline.ActivityStartAll(entries, MEMCPY_IN_HOST_BUFFER);
-    cuda_context_->ErrorCheck("cudaMemcpyAsync",
-                              cudaMemcpyAsync(host_buffer_, buffer_data,
-                                              buffer_len, cudaMemcpyDeviceToHost,
-                                              *stream_));
-    timeline.ActivityEndAll(entries);
-    
-    timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
-    int op = PSL_Allreduce(MPI_IN_PLACE, host_buffer_,
-                           (int) num_elements,
-                           mpi_context_->GetMPIDataType(first_entry.tensor),
-                           MPI_OP_NULL, //mpi_context_->GetMPISumOp(first_entry.tensor->dtype()),
-                           mpi_context_->GetMPICommunicator(Communicator::CROSS));
-    if (op != MPI_SUCCESS) {
-      throw std::runtime_error("MPI_Allreduce failed, see MPI output for details.");
+    auto& timeline = global_state_->timeline;
+    auto nccl_result = ncclReduce(fused_input_data,
+                                  buffer_data,
+                                  (size_t) num_elements,
+                                  GetNCCLDataType(e.tensor),
+                                  ncclSum, 0, *nccl_comm_, *stream_);
+    nccl_context_->ErrorCheck("ncclReduce", nccl_result);
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
     }
-    timeline.ActivityEndAll(entries);
 
-    timeline.ActivityStartAll(entries, MEMCPY_OUT_HOST_BUFFER);
-    cuda_context_->ErrorCheck("cudaMemcpyAsync",
-                              cudaMemcpyAsync(buffer_data, host_buffer_,
-                                              buffer_len, cudaMemcpyHostToDevice,
-                                              *stream_));
-    timeline.ActivityEndAll(entries);
-  }
+    bool is_root_rank = global_state_->local_rank == 0;
+    
+    if (is_root_rank) {
+      tmpdata.resize(buffer_len);
 
-  nccl_context_->ErrorCheck("ncclBcast",
-			    ncclBcast(buffer_data,
-				      (size_t) num_elements,
-				      GetNCCLDataType(first_entry.tensor),
-				      0,
-				      *nccl_comm_, *stream_));
-  if (global_state_->timeline.Initialized()) {
-    cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
+      void * host_buffer_ = (void *) tmpdata.data();
+      // Synchronize.
+      cuda_context_->WaitForEvents(event_queue_, entries, timeline);
+      // According to https://docs.nvidia.com/cuda/cuda-runtime-api/
+      // api-sync-behavior.html#api-sync-behavior__memcpy-async,
+      // cudaMemcpyAsync is synchronous with respect to the host, so we
+      // memcpy (effectively) synchronously to generate an accurate timeline
+      timeline.ActivityStartAll(entries, MEMCPY_IN_HOST_BUFFER);
+      cuda_context_->ErrorCheck("cudaMemcpyAsync",
+                                cudaMemcpyAsync(host_buffer_, buffer_data,
+                                                buffer_len, cudaMemcpyDeviceToHost,
+                                                *stream_));
+      timeline.ActivityEndAll(entries);
+
+      timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
+      int op = PSL_Allreduce(MPI_IN_PLACE, host_buffer_,
+                                   (int) num_elements,
+                                   mpi_context_->GetMPIDataType(e.tensor),
+                                   MPI_OP_NULL,
+                                   mpi_context_->GetMPICommunicator(Communicator::CROSS));
+      if (op != MPI_SUCCESS) {
+        throw std::logic_error("MPI_Allreduce failed, see MPI output for details.");
+      }
+      timeline.ActivityEndAll(entries);
+      
+      timeline.ActivityStartAll(entries, MEMCPY_OUT_HOST_BUFFER);
+      cuda_context_->ErrorCheck("cudaMemcpyAsync",
+                                cudaMemcpyAsync(buffer_data, host_buffer_,
+                                                buffer_len, cudaMemcpyHostToDevice,
+                                                *stream_));
+      timeline.ActivityEndAll(entries);
+    }
+
+    // Copy memory out of the fusion buffer.
+    if (entries.size() > 1) {
+      int64_t offset = 0;
+      for (auto& e : entries) {
+        void* buffer_data_at_offset = (uint8_t*) buffer_data + offset;
+        auto cuda_result = cudaMemcpyAsync((void*) e.output->data(), buffer_data_at_offset,
+                                           (size_t) e.tensor->size(), cudaMemcpyDeviceToDevice,
+                                           *stream_);
+        cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
+        nccl_context_->ErrorCheck("ncclBcast",
+                                  ncclBcast(buffer_data_at_offset,
+                                            (size_t) e.tensor->shape().num_elements(),
+                                            GetNCCLDataType(e.tensor),
+                                            0,
+                                            *nccl_comm_, *stream_));
+        offset += e.tensor->size();	
+      }
+      
+      if (global_state_->timeline.Initialized()) {
+        cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
+      }
+    } else {
+      nccl_context_->ErrorCheck("ncclBcast",
+                                ncclBcast(buffer_data,
+                                          (size_t) num_elements,
+                                          GetNCCLDataType(e.tensor),
+                                          0,
+                                          *nccl_comm_, *stream_));
+      if (global_state_->timeline.Initialized()) {
+        cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
+      }
+    }
   }
 
   

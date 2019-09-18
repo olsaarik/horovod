@@ -1,7 +1,7 @@
 #ifndef HOROVOD_PSL_OPERATIONS_H
 #define HOROVOD_PSL_OPERATIONS_H
 
-#include <nccl.h>
+//#include <nccl.h>
 
 #include "mpi.h"
 #include "../mpi_context.h"
@@ -160,7 +160,7 @@ namespace horovod {
     };
 
     template<typename T>
-      static void AllreduceImpl(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, int message_tag) {
+    static void AllreduceImplTree(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, int message_tag) {
       int true_rank;
       int redn_rank;
       int size;
@@ -213,160 +213,258 @@ namespace horovod {
       MPI_Bcast(grad_buffer, count*sizeof(T), MPI_CHAR, 0, communicator);
     }
 
-    /* template<typename T> */
-    /* void MsAllreduceOp::SyncAllreduce(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, MPI_Comm* reduction_comms, int layerid, TensorTableEntry entry) { */
-    /*   int rank; */
-    /*   int size; */
-    /*   MPI_Comm_rank(communicator, &rank); */
-    /*   MPI_Comm_size(communicator, &size); */
-    /*   //MPI_Allreduce((float*) grad_buffer, (float*) recv_buffer, count/2, MPI_FLOAT, MPI_SUM, communicator); */
 
-    /*   //return; */
-    /*   if (IsPowerOfTwo(size) == false) { */
-    /* 	throw std::logic_error("BUGBUG: need to implement logic for non power of two ranks"); */
-    /*   } */
+    template<typename T>
+    static void PairwiseReduceWithComm(T* a, T* b, int count, int layerid, MPI_Comm& comm, bool isLeftNeighbor) {
+      double dotProduct = 0.;
+      double anormsq = 0.;
+      double bnormsq = 0.;
+
+      DeviceImpl<T>::DotProd(a, b, count, dotProduct, anormsq, bnormsq);
+      double reduce_vals[3];
+      if (isLeftNeighbor) { 
+        reduce_vals[0] = anormsq;
+        reduce_vals[1] = bnormsq;
+      } else {
+        reduce_vals[1] = anormsq;
+        reduce_vals[0] = bnormsq;
+      }
+      reduce_vals[2] = dotProduct;
+
+      // TODO replace this with something else
+      MPI_Allreduce(MPI_IN_PLACE, reduce_vals, 3, MPI_DOUBLE, MPI_SUM, comm);
+
+      if (isLeftNeighbor) { 
+        anormsq = reduce_vals[0];
+        bnormsq = reduce_vals[1];
+      } else {
+        anormsq = reduce_vals[1];
+        bnormsq = reduce_vals[0];
+      }
+      dotProduct = reduce_vals[2];
+
+      double acoeff = 1;
+      double bcoeff = 1;
+      if (anormsq >= 1e-8)
+        acoeff = 1.0 - dotProduct / anormsq * 0.5;
+      if (bnormsq >= 1e-8)
+        bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
+
+      // a = acoeff * a + bcoeff * b
+      DeviceImpl<T>::ScaleAdd(count, acoeff, a, bcoeff, b);
+    }
+
+    static bool IsPowerOfTwo(ulong x) {
+      return (x != 0) && ((x & (x - 1)) == 0);
+    }
     
-    /*   //int chunk_size = (1<<15); */
-    /*   int chunk_size = (1<<29); */
-    /*   int nearest_power_2 = 1; */
-    /*   for (nearest_power_2 = 1; (nearest_power_2<<1) <= size; nearest_power_2 = (nearest_power_2 << 1)){} */
-    /*   int remaining_non_power_2 = size - nearest_power_2; */
-    /*   int level; */
-    /*   if (rank >= size - 2 * remaining_non_power_2){ */
-    /*     int myCount; */
-    /*     int nghrCount; */
-    /*     level = 0; */
-    /*     int neighbor_rank; */
-    /*     int sendOffset; */
-    /*     int recvOffset; */
-    /*     if (rank < nearest_power_2){ */
-    /* 	  neighbor_rank = rank + remaining_non_power_2; */
-    /* 	  myCount = (count >> 1); */
-    /* 	  nghrCount = count - myCount; */
-    /* 	  sendOffset = myCount; */
-    /* 	  recvOffset = 0; */
-    /*     } else { */
-    /* 	  nghrCount = (count >> 1); */
-    /* 	  myCount = count - nghrCount; */
-    /* 	  neighbor_rank = rank - remaining_non_power_2; */
-    /* 	  sendOffset = 0; */
-    /* 	  recvOffset = nghrCount; */
-    /*     } */
-    /*     for (int i = 0; i < std::max(nghrCount, myCount); i += chunk_size) { */
-    /* 	  MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE); */
-    /*     } */
-    /*     scaleAddFunc(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset], global_state_, layerid); */
+    template<typename T>
+    static void AllreduceImplVHDD(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, int layerid, MPI_Comm* reduction_comms) {
+      int rank;
+      int size;
+      MPI_Comm_rank(communicator, &rank);
+      MPI_Comm_size(communicator, &size);
 
-    /*     if (rank < nearest_power_2) { */
-    /* 	  for (int i = 0; i < nghrCount; i += chunk_size) { */
-    /* 	    MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE); */
-    /* 	  } */
-    /*     } else { */
-    /* 	  for (int i = 0; i < myCount; i += chunk_size) */
-    /* 	    MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator); */
-    /*     } */
-    /*   } */
+      if (IsPowerOfTwo(size) == false) {
+    	throw std::logic_error("BUGBUG: need to implement logic for non power of two ranks");
+      }
 
-    /*   int orgSize = size; */
-    /*   size = nearest_power_2; */
-    /*   if (rank < nearest_power_2){ */
-    /*     int myCount = count; */
-    /*     int comm_index; */
-    /*     for (level = 1, comm_index = 0; level < size; level = (level << 1), comm_index++){ */
-    /* 	  int neighbor_rank = rank ^ level; */
-    /* 	  int nghrCount = 0; */
-    /* 	  int sendOffset = 0; */
-    /* 	  int recvOffset = 0; */
-    /* 	  int firstHalfMyCount = (myCount >> 1); */
-    /* 	  int secondHalfMyCount = myCount - firstHalfMyCount; */
-    /* 	  if ((rank & level) != 0) { */
-    /* 	    myCount = secondHalfMyCount; */
-    /* 	    nghrCount = firstHalfMyCount; */
-    /* 	    sendOffset = 0; */
-    /* 	    recvOffset = nghrCount; */
-    /* 	  } else { */
-    /* 	    myCount = firstHalfMyCount; */
-    /* 	    nghrCount = secondHalfMyCount; */
-    /* 	    sendOffset = myCount; */
-    /* 	    recvOffset = 0; */
-    /* 	  } */
-    /* 	  for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size) */
-    /* 	    MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE); */
-    /* 	  if ((rank & level) != 0) { */
-    /* 	    grad_buffer = &grad_buffer[nghrCount]; */
-    /* 	    recv_buffer = &recv_buffer[nghrCount]; */
-    /* 	  } */
-    /* 	  if (level == 1) { */
-    /* 	    scaleAddFunc(myCount, 0.5, grad_buffer , 0.5, recv_buffer, global_state_, layerid); */
-    /* 	  } else { */
-    /* 	    PairwiseReduceWithComm(grad_buffer, recv_buffer, myCount, layerid, reduction_comms[comm_index], (rank & level) == 0, dotProdFunc, scaleAddFunc); */
-    /* 	  } */
-    /*     } */
+      //std::cerr << " rere0 " << rank << std::endl;
+      //int chunk_size = (1<<15);
+      int chunk_size = (1<<29);
+      int nearest_power_2 = 1;
+      for (nearest_power_2 = 1; (nearest_power_2<<1) <= size; nearest_power_2 = (nearest_power_2 << 1)){}
+      int remaining_non_power_2 = size - nearest_power_2;
+      int level;
+      if (rank >= size - 2 * remaining_non_power_2){
+        int myCount;
+        int nghrCount;
+        level = 0;
+        int neighbor_rank;
+        int sendOffset;
+        int recvOffset;
+        if (rank < nearest_power_2){
+    	  neighbor_rank = rank + remaining_non_power_2;
+    	  myCount = (count >> 1);
+    	  nghrCount = count - myCount;
+    	  sendOffset = myCount;
+    	  recvOffset = 0;
+        } else {
+    	  nghrCount = (count >> 1);
+    	  myCount = count - nghrCount;
+    	  neighbor_rank = rank - remaining_non_power_2;
+    	  sendOffset = 0;
+    	  recvOffset = nghrCount;
+        }
+        for (int i = 0; i < std::max(nghrCount, myCount); i += chunk_size) {
+    	  MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator, MPI_STATUS_IGNORE);
+        }
+        DeviceImpl<T>::ScaleAdd(myCount, 1.0, &grad_buffer[recvOffset] , 1.0, &recv_buffer[recvOffset]);
 
-    /* 	for (level = (size >> 1); level > 0; level = (level >> 1)) { */
-    /* 	  int neighbor_rank = rank ^ level; */
-    /* 	  int nghrCount = myCount; */
-    /* 	  int levelNP = (level << 1); */
-    /* 	  int levelSizeDeterminer = levelNP - 1; */
-    /* 	  int countRemainer = (count & levelSizeDeterminer); */
-    /* 	  int myLevelRank = (rank & levelSizeDeterminer); */
-    /* 	  int nghrLevelRank = (neighbor_rank & levelSizeDeterminer); */
-    /* 	  if ((myLevelRank >= (levelNP - countRemainer)) && (nghrLevelRank < (levelNP - countRemainer))){ */
-    /* 	    nghrCount -= 1; */
-    /* 	  } else if ((myLevelRank < (levelNP - countRemainer)) && (nghrLevelRank >= (levelNP - countRemainer))){ */
-    /* 	    nghrCount += 1; */
-    /* 	  } */
+        if (rank < nearest_power_2) {
+    	  for (int i = 0; i < nghrCount; i += chunk_size) {
+    	    MPI_Recv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator, MPI_STATUS_IGNORE);
+    	  }
+        } else {
+    	  for (int i = 0; i < myCount; i += chunk_size)
+    	    MPI_Send((char*)(&grad_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator);
+        }
+      }
 
-    /* 	  if ((rank & level) == 0) { */
-    /* 	    recv_buffer = &grad_buffer[myCount]; */
-    /* 	  } else { */
-    /* 	    recv_buffer = &grad_buffer[-nghrCount]; */
-    /* 	  } */
-    /* 	  for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size) */
-    /* 	    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE); */
-    /* 	  if ((rank & level) != 0) { */
-    /* 	    grad_buffer = &grad_buffer[-nghrCount]; */
-    /* 	  } */
-    /* 	  myCount += nghrCount; */
-    /* 	} */
-    /*   } */
-    /*   size = orgSize; */
+      int orgSize = size;
+      size = nearest_power_2;
+      if (rank < nearest_power_2){
+        int myCount = count;
+        int comm_index;
+        for (level = 1, comm_index = 0; level < size; level = (level << 1), comm_index++){
+    	  int neighbor_rank = rank ^ level;
+    	  int nghrCount = 0;
+    	  int sendOffset = 0;
+    	  int recvOffset = 0;
+    	  int firstHalfMyCount = (myCount >> 1);
+    	  int secondHalfMyCount = myCount - firstHalfMyCount;
+    	  if ((rank & level) != 0) {
+    	    myCount = secondHalfMyCount;
+    	    nghrCount = firstHalfMyCount;
+    	    sendOffset = 0;
+    	    recvOffset = nghrCount;
+    	  } else {
+    	    myCount = firstHalfMyCount;
+    	    nghrCount = secondHalfMyCount;
+    	    sendOffset = myCount;
+    	    recvOffset = 0;
+    	  }
+    	  for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
+    	    MPI_Sendrecv((char*)(&grad_buffer[i+sendOffset]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, (char*)(&recv_buffer[i+recvOffset]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator, MPI_STATUS_IGNORE);
+    	  if ((rank & level) != 0) {
+    	    grad_buffer = &grad_buffer[nghrCount];
+    	    recv_buffer = &recv_buffer[nghrCount];
+    	  }
+    	  if (level == 1) {
+    	    DeviceImpl<T>::ScaleAdd(myCount, 0.5, grad_buffer , 0.5, recv_buffer);
+    	  } else {
+    	    PairwiseReduceWithComm<T>(grad_buffer, recv_buffer, myCount, layerid, reduction_comms[comm_index], (rank & level) == 0);
+    	  }
+        }
 
-    /*   if (rank >= size - 2 * remaining_non_power_2){ */
-    /*     level = 0; */
-    /*     int neighbor_rank; */
-    /*     if (rank < nearest_power_2) { */
-    /* 	  neighbor_rank = rank + remaining_non_power_2; */
-    /* 	  for (int i = 0; i < count; i += chunk_size) { */
-    /* 	    MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator); */
-    /* 	  } */
-    /*     } else { */
-    /* 	  neighbor_rank = rank - remaining_non_power_2; */
-    /* 	  for (int i = 0; i < count; i += chunk_size) */
-    /* 	    MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, level * 1000 + layerid, communicator, MPI_STATUS_IGNORE); */
-    /*     } */
-    /*   } */
-    /* } */
+    	for (level = (size >> 1); level > 0; level = (level >> 1)) {
+    	  int neighbor_rank = rank ^ level;
+    	  int nghrCount = myCount;
+    	  int levelNP = (level << 1);
+    	  int levelSizeDeterminer = levelNP - 1;
+    	  int countRemainer = (count & levelSizeDeterminer);
+    	  int myLevelRank = (rank & levelSizeDeterminer);
+    	  int nghrLevelRank = (neighbor_rank & levelSizeDeterminer);
+    	  if ((myLevelRank >= (levelNP - countRemainer)) && (nghrLevelRank < (levelNP - countRemainer))){
+    	    nghrCount -= 1;
+    	  } else if ((myLevelRank < (levelNP - countRemainer)) && (nghrLevelRank >= (levelNP - countRemainer))){
+    	    nghrCount += 1;
+    	  }
 
+    	  if ((rank & level) == 0) {
+    	    recv_buffer = &grad_buffer[myCount];
+    	  } else {
+    	    recv_buffer = &grad_buffer[-nghrCount];
+    	  }
+    	  for (int i = 0; i < std::max(myCount,nghrCount); i += chunk_size)
+    	    MPI_Sendrecv((char*)(&grad_buffer[i]), std::min(chunk_size, myCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, (char*)(&recv_buffer[i]), std::min(chunk_size, nghrCount-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator, MPI_STATUS_IGNORE);
+    	  if ((rank & level) != 0) {
+    	    grad_buffer = &grad_buffer[-nghrCount];
+    	  }
+    	  myCount += nghrCount;
+    	}
+      }
+      size = orgSize;
+
+      if (rank >= size - 2 * remaining_non_power_2){
+        level = 0;
+        int neighbor_rank;
+        if (rank < nearest_power_2) {
+    	  neighbor_rank = rank + remaining_non_power_2;
+    	  for (int i = 0; i < count; i += chunk_size) {
+    	    MPI_Send((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator);
+    	  }
+        } else {
+    	  neighbor_rank = rank - remaining_non_power_2;
+    	  for (int i = 0; i < count; i += chunk_size)
+    	    MPI_Recv((char*)(&grad_buffer[i]), std::min(chunk_size, count-i)*sizeof(T)/sizeof(char), MPI_CHAR, neighbor_rank, layerid, communicator, MPI_STATUS_IGNORE);
+        }
+      }
+      //std::cerr << " rere1 " << rank << std::endl;
+    }
+
+    static MPI_Comm * reduction_comms = NULL;
+    
+    template<typename T>
+    static void AllreduceImpl(T* grad_buffer, T* recv_buffer, int count, MPI_Comm communicator, int layerid) {
+      if (count <= 1024) 
+	AllreduceImplTree<T>(grad_buffer, recv_buffer, count, communicator, layerid);
+      else {
+	if(reduction_comms == NULL) {
+	  throw std::logic_error("init comms please");
+	}
+	AllreduceImplVHDD<T>(grad_buffer, recv_buffer, count, communicator, layerid, reduction_comms);
+      }
+    }
+    
+    
+    static void InitComms(MPI_Comm global_comm) {
+      int rank, size;
+      MPI_Comm_rank(global_comm, &rank);
+      MPI_Comm_size(global_comm, &size);
+	
+      MPI_Group world_group;
+      MPI_Comm_group(global_comm, &world_group);
+	
+      int nearest_power_2 = 1;
+      int log_size;
+      for (nearest_power_2 = 1, log_size = 0; (nearest_power_2 << 1) <= size; nearest_power_2 = (nearest_power_2 << 1), log_size++);
+      int shift_val;
+      int level;
+      int rank_log_size = log_size;
+      reduction_comms = new MPI_Comm[log_size];
+      int *node_rank = new int[size];
+      for (level = 1, shift_val = 1; level < nearest_power_2; level = (level << 1), shift_val++) {
+	int base_rank = ((rank >> shift_val) << shift_val);
+	for (int i = 0; i < (level << 1); i++) {
+	  node_rank[i] = (base_rank + i);// * ms_local_size;
+	}
+	MPI_Group red_group;
+	MPI_Group_incl(world_group, (level << 1), node_rank, &red_group);
+	MPI_Comm_create_group(global_comm, red_group, 0, &reduction_comms[shift_val - 1]);
+	MPI_Group_free(&red_group);
+      }
+	
+      delete[] node_rank;
+    }
+    
     int PSL_Allreduce(const void * sendbuf, void * recvbuf, int count, MPI_Datatype datatype, MPI_Op op, MPI_Comm comm) {
       if (op != MPI_OP_NULL  ) {
 	std::cerr << "MPI_op op must be null for parasail logic " << datatype << std::endl;
 	return MPI_ERR_OP;
       }
+
+      if (reduction_comms == NULL) {
+	std::cerr << "initializing comms" << std::endl;
+	InitComms(comm);	
+      }
+
       static std::vector<char> tmp;
-      const void * src;
-      void * dst;
+      const void * input_buffer;
+      void * tmp_buffer;
       
       if (datatype == MPI_FLOAT) {
 	if(sendbuf == MPI_IN_PLACE) {
 	  tmp.resize(sizeof(float) * count);
-	  dst = tmp.data();
-	  src = recvbuf;
+	  tmp_buffer = tmp.data();
+	  input_buffer = recvbuf;
 	} else {
-	  src = sendbuf;
-	  dst = recvbuf;
+	  input_buffer = sendbuf;
+	  tmp_buffer = recvbuf;
+	  throw std::logic_error("not implemented");
 	}
-	AllreduceImpl<float>((float*)src, (float*)dst, count, comm, 0);
+	AllreduceImpl<float>((float*)input_buffer, (float*)tmp_buffer, count, comm, 0);
+      	return MPI_SUCCESS;
       } else if (datatype == MPI_DOUBLE) {
 	std::cerr << "not implemented yet " << datatype << std::endl;
 	return MPI_ERR_TYPE;
@@ -377,18 +475,19 @@ namespace horovod {
       if (size == 2) {
 	if(sendbuf == MPI_IN_PLACE) {
 	  tmp.resize(sizeof(float16) * count);
-	  dst = tmp.data();
-	  src = recvbuf;
+	  tmp_buffer = tmp.data();
+	  input_buffer = recvbuf;
 	} else {
-	  src = sendbuf;
-	  dst = recvbuf;
+	  input_buffer = sendbuf;
+	  tmp_buffer = recvbuf;
+	  throw std::logic_error("not implemented");
 	}
-	AllreduceImpl<float16>((float16*)src, (float16*)dst, count, comm, 0);
+	AllreduceImpl<float16>((float16*)input_buffer, (float16*)tmp_buffer, count, comm, 0);
+      	return MPI_SUCCESS;
       } else {
 	std::cerr << "unknown MPI type " << datatype << std::endl;
 	return MPI_ERR_TYPE;
       }
-      return MPI_SUCCESS;
     }
 
   } // namespace common

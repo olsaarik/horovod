@@ -119,9 +119,24 @@ class _DistributedOptimizer(torch.optim.Optimizer):
     def _allreduce_grad_async(self, p):
         name = self._parameter_names.get(p)
         tensor = p.grad
+
+        # toddm: hack hack to normalize locally by # gpus
+        tensor.div_(4.0)
+
+        # toddm: norm locally
+        norm_type = 2
+        max_norm = 1.0
+        param_norm = tensor.norm(norm_type)
+        total_norm = param_norm.item()
+        clip_coef = max_norm / (total_norm + 1e-6)
+        if clip_coef < 1:
+            tensor.mul_(clip_coef)
+            
         tensor_compressed, ctx = self._compression.compress(tensor)
 
-        handle = allreduce_async_(tensor_compressed, average=True, name=name)
+        # toddm: average=False for psl logic
+        handle = allreduce_async_(tensor_compressed, average=False, name=name)
+        
         return handle, ctx
 
     def _make_hook(self, p):
