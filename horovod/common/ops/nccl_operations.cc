@@ -249,7 +249,7 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
       cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
     }
 
-    bool is_root_rank = global_state_->local_rank == 0;
+    bool is_root_rank = global_state_->controller->GetLocalRank() == 0;
     
     if (is_root_rank) {
       tmpdata.resize(buffer_len);
@@ -288,27 +288,27 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     }
 
     // Copy memory out of the fusion buffer.
-    if (entries.size() > 1) {
-      int64_t offset = 0;
-      for (auto& e : entries) {
-        void* buffer_data_at_offset = (uint8_t*) buffer_data + offset;
-        auto cuda_result = cudaMemcpyAsync((void*) e.output->data(), buffer_data_at_offset,
-                                           (size_t) e.tensor->size(), cudaMemcpyDeviceToDevice,
-                                           *stream_);
-        cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-        nccl_context_->ErrorCheck("ncclBcast",
-                                  ncclBcast(buffer_data_at_offset,
-                                            (size_t) e.tensor->shape().num_elements(),
-                                            GetNCCLDataType(e.tensor),
-                                            0,
-                                            *nccl_comm_, *stream_));
-        offset += e.tensor->size();	
-      }
+    // if (entries.size() > 1) {
+    //   int64_t offset = 0;
+    //   for (auto& e : entries) {
+    //     void* buffer_data_at_offset = (uint8_t*) buffer_data + offset;
+    //     auto cuda_result = cudaMemcpyAsync((void*) e.output->data(), buffer_data_at_offset,
+    //                                        (size_t) e.tensor->size(), cudaMemcpyDeviceToDevice,
+    //                                        *stream_);
+    //     cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
+    //     nccl_context_->ErrorCheck("ncclBcast",
+    //                               ncclBcast(buffer_data_at_offset,
+    //                                         (size_t) e.tensor->shape().num_elements(),
+    //                                         GetNCCLDataType(e.tensor),
+    //                                         0,
+    //                                         *nccl_comm_, *stream_));
+    //     offset += e.tensor->size();	
+    //   }
       
-      if (global_state_->timeline.Initialized()) {
-        cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
-      }
-    } else {
+    //   if (global_state_->timeline.Initialized()) {
+    //     cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
+    //   }
+    // } else {
       nccl_context_->ErrorCheck("ncclBcast",
                                 ncclBcast(buffer_data,
                                           (size_t) num_elements,
@@ -318,7 +318,7 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
       if (global_state_->timeline.Initialized()) {
         cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
       }
-    }
+    // }
   }
 
   

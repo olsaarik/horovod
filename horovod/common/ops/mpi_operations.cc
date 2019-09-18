@@ -23,11 +23,13 @@ MPIAllreduce::MPIAllreduce(MPIContext* mpi_context, HorovodGlobalState* global_s
     : AllreduceOp(global_state), mpi_context_(mpi_context) {}
 
 Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Response& response) {
-    
+  auto& first_entry = entries[0];
+
   void* buffer_data;
   size_t buffer_len;
-  int64_t num_elements;
+  int64_t num_elements = NumElements(entries);
 
+  // Copy memory into the fusion buffer.
   auto& timeline = global_state_->timeline;
   if (entries.size() > 1) {
     timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
@@ -59,46 +61,6 @@ Status MPIAllreduce::Execute(std::vector<TensorTableEntry>& entries, const Respo
     MemcpyOutFusionBuffer(buffer_data, entries);
     timeline.ActivityEndAll(entries);
   }
-  timeline.ActivityEndAll(entries);  
-  
-  // auto& first_entry = entries[0];
-
-  // void* buffer_data;
-  // size_t buffer_len;
-  // int64_t num_elements = NumElements(entries);
-
-  // // Copy memory into the fusion buffer.
-  // auto& timeline = global_state_->timeline;
-  // if (entries.size() > 1) {
-  //   timeline.ActivityStartAll(entries, MEMCPY_IN_FUSION_BUFFER);
-  //   const void* fused_input_data;
-  //   MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
-  //   timeline.ActivityEndAll(entries);
-  // } else {
-  //   buffer_data = (void*) first_entry.output->data();
-  //   buffer_len = (size_t) first_entry.output->size();
-  // }
-
-  // // Do allreduce.
-  // timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
-  // const void* sendbuf = entries.size() > 1 || first_entry.tensor->data() == first_entry.output->data()
-  //                       ? MPI_IN_PLACE : first_entry.tensor->data();
-  // int op = MPI_Allreduce(sendbuf, buffer_data,
-  //                        (int) num_elements,
-  //                        mpi_context_->GetMPIDataType(first_entry.tensor),
-  //                        mpi_context_->GetMPISumOp(first_entry.tensor->dtype()),
-  //                        mpi_context_->GetMPICommunicator(Communicator::GLOBAL));
-  // if (op != MPI_SUCCESS) {
-  //   throw std::logic_error("MPI_Allreduce failed, see MPI output for details.");
-  // }
-  // timeline.ActivityEndAll(entries);
-
-  // // Copy memory out of the fusion buffer.
-  // if (entries.size() > 1) {
-  //   timeline.ActivityStartAll(entries, MEMCPY_OUT_FUSION_BUFFER);
-  //   MemcpyOutFusionBuffer(buffer_data, entries);
-  //   timeline.ActivityEndAll(entries);
-  // }
 
   return Status::OK();
 }
@@ -369,7 +331,6 @@ Status MPIBroadcast::Execute(std::vector<TensorTableEntry>& entries, const Respo
   void* data_ptr;
   if (global_state_->controller->GetRank() == e.root_rank) {
     data_ptr = (void*) e.tensor->data();
-
   } else {
     data_ptr = (void*) e.output->data();
   }

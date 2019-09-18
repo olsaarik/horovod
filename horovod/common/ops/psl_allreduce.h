@@ -4,7 +4,6 @@
 //#include <nccl.h>
 
 #include "mpi.h"
-#include "../mpi_context.h"
 #include "cuda_operations.h"
 #include <immintrin.h>
 #include <emmintrin.h>
