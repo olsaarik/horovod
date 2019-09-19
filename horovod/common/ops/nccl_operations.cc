@@ -229,46 +229,56 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
   // int64_t total_buffer_len = is_root_rank
   //                                ? buffer_len_per_rank + buffer_len_remaining
   //                                : buffer_len_per_rank;
-  
-  static std::vector<char> tmpdata;
-  
+
+  bool is_root_rank = global_state_->controller->GetLocalRank() == 0;
+
+  std::vector<std::unique_ptr<char[]>> host_buffers;
+  std::vector<cudaEvent_t> events;
+  events.resize(entries.size());
+
+  int layerid = 0;
   for (auto& e : entries) {
     fused_input_data = e.tensor->data();
     buffer_data = (void*) e.output->data();
     buffer_len = (size_t) e.output->size();
     int num_elements = e.tensor->shape().num_elements();
 
-    auto& timeline = global_state_->timeline;
     auto nccl_result = ncclReduce(fused_input_data,
                                   buffer_data,
                                   (size_t) num_elements,
                                   GetNCCLDataType(e.tensor),
                                   ncclSum, 0, *nccl_comm_, *stream_);
     nccl_context_->ErrorCheck("ncclReduce", nccl_result);
-    if (global_state_->timeline.Initialized()) {
-      cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
-    }
 
-    bool is_root_rank = global_state_->controller->GetLocalRank() == 0;
-    
     if (is_root_rank) {
-      tmpdata.resize(buffer_len);
+      host_buffers.emplace_back(new char[buffer_len]);
+      auto host_buffer_ = (void*)host_buffers[layerid].get();
 
-      void * host_buffer_ = (void *) tmpdata.data();
-      // Synchronize.
-      cuda_context_->WaitForEvents(event_queue_, entries, timeline);
-      // According to https://docs.nvidia.com/cuda/cuda-runtime-api/
-      // api-sync-behavior.html#api-sync-behavior__memcpy-async,
-      // cudaMemcpyAsync is synchronous with respect to the host, so we
-      // memcpy (effectively) synchronously to generate an accurate timeline
-      timeline.ActivityStartAll(entries, MEMCPY_IN_HOST_BUFFER);
       cuda_context_->ErrorCheck("cudaMemcpyAsync",
                                 cudaMemcpyAsync(host_buffer_, buffer_data,
                                                 buffer_len, cudaMemcpyDeviceToHost,
                                                 *stream_));
-      timeline.ActivityEndAll(entries);
 
-      timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
+      auto& event = events[layerid];
+      cuda_context_->ErrorCheck("GetCudaEvent", cuda_context_->GetCudaEvent(&event));
+      cuda_context_->ErrorCheck("cudaEventRecord", cudaEventRecord(event, *stream_));
+    }
+    layerid += 1;
+  }
+  
+  if (is_root_rank) {
+    layerid = 0;
+    for (auto& e : entries) {
+      fused_input_data = e.tensor->data();
+      buffer_data = (void*) e.output->data();
+      buffer_len = (size_t) e.output->size();
+      int num_elements = e.tensor->shape().num_elements();
+      auto host_buffer_ = (void*)host_buffers[layerid].get();
+      auto& event = events[layerid];
+      
+      cuda_context_->ErrorCheck("cudaEventSynchronize", cudaEventSynchronize(event));
+      cuda_context_->ErrorCheck("ReleaseCudaEvent", cuda_context_->ReleaseCudaEvent(event));
+
       int op = PSL_Allreduce(MPI_IN_PLACE, host_buffer_,
                                    (int) num_elements,
                                    mpi_context_->GetMPIDataType(e.tensor),
@@ -277,48 +287,30 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
       if (op != MPI_SUCCESS) {
         throw std::logic_error("MPI_Allreduce failed, see MPI output for details.");
       }
-      timeline.ActivityEndAll(entries);
-      
-      timeline.ActivityStartAll(entries, MEMCPY_OUT_HOST_BUFFER);
+
       cuda_context_->ErrorCheck("cudaMemcpyAsync",
                                 cudaMemcpyAsync(buffer_data, host_buffer_,
                                                 buffer_len, cudaMemcpyHostToDevice,
                                                 *stream_));
-      timeline.ActivityEndAll(entries);
+      layerid += 1;
     }
+  }
 
-    // Copy memory out of the fusion buffer.
-    // if (entries.size() > 1) {
-    //   int64_t offset = 0;
-    //   for (auto& e : entries) {
-    //     void* buffer_data_at_offset = (uint8_t*) buffer_data + offset;
-    //     auto cuda_result = cudaMemcpyAsync((void*) e.output->data(), buffer_data_at_offset,
-    //                                        (size_t) e.tensor->size(), cudaMemcpyDeviceToDevice,
-    //                                        *stream_);
-    //     cuda_context_->ErrorCheck("cudaMemcpyAsync", cuda_result);
-    //     nccl_context_->ErrorCheck("ncclBcast",
-    //                               ncclBcast(buffer_data_at_offset,
-    //                                         (size_t) e.tensor->shape().num_elements(),
-    //                                         GetNCCLDataType(e.tensor),
-    //                                         0,
-    //                                         *nccl_comm_, *stream_));
-    //     offset += e.tensor->size();	
-    //   }
-      
-    //   if (global_state_->timeline.Initialized()) {
-    //     cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
-    //   }
-    // } else {
-      nccl_context_->ErrorCheck("ncclBcast",
-                                ncclBcast(buffer_data,
-                                          (size_t) num_elements,
-                                          GetNCCLDataType(e.tensor),
-                                          0,
-                                          *nccl_comm_, *stream_));
-      if (global_state_->timeline.Initialized()) {
-        cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
-      }
-    // }
+  layerid = 0;
+  for (auto& e : entries) {
+    fused_input_data = e.tensor->data();
+    buffer_data = (void*) e.output->data();
+    buffer_len = (size_t) e.output->size();
+    int num_elements = e.tensor->shape().num_elements();
+    auto& event = events[layerid];
+
+    nccl_context_->ErrorCheck("ncclBcast",
+                              ncclBcast(buffer_data,
+                                        (size_t) num_elements,
+                                        GetNCCLDataType(e.tensor),
+                                        0,
+                                        *nccl_comm_, *stream_));
+    layerid += 1;
   }
 
   
