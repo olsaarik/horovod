@@ -169,70 +169,223 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
   void* buffer_data;
   size_t buffer_len;
 
+  // Copy memory into the fusion buffer.
+  if (entries.size() > 1) {
+    MemcpyInFusionBuffer(entries, fused_input_data, buffer_data, buffer_len);
+
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, MEMCPY_IN_FUSION_BUFFER, *stream_);
+    }
+  } else {
+    fused_input_data = first_entry.tensor->data();
+    buffer_data = (void*) first_entry.output->data();
+    buffer_len = (size_t) first_entry.output->size();
+  }
+
+  int64_t num_elements = 0;
+  for (auto& e : entries) {
+    num_elements += e.tensor->shape().num_elements();
+  }
+
   // Do allreduce.
-  // int element_size = mpi_context_->GetMPITypeSize(first_entry.tensor->dtype());
-  // int local_size = global_state_->controller->GetLocalSize();
-  // int local_rank = global_state_->controller->GetLocalRank();
+  int element_size = mpi_context_->GetMPITypeSize(first_entry.tensor->dtype());
+  int local_size = global_state_->controller->GetLocalSize();
+  int local_rank = global_state_->controller->GetLocalRank();
 
-  // // If cluster is homogeneous and we are using fusion buffer, include
-  // // dummy elements from the buffer (if necessary) to make sure the data
-  // // is divisible by local_size. This is always possible since we
-  // // set the fusion buffer size divisible by local_size.
-  // if (global_state_->controller->IsHomogeneous() && entries.size() > 1) {
-  //   // Making sure the number of elements is divisible by
-  //   // FUSION_BUFFER_ATOMIC_UNIT for improved performance
-  //   int div = local_size * FUSION_BUFFER_ATOMIC_UNIT;
-  //   num_elements = ((num_elements + div - 1) / div) * div;
-  //   buffer_len = num_elements * element_size;
-  // }
+  // If cluster is homogeneous and we are using fusion buffer, include
+  // dummy elements from the buffer (if necessary) to make sure the data
+  // is divisible by local_size. This is always possible since we
+  // set the fusion buffer size divisible by local_size.
+  if (global_state_->controller->IsHomogeneous() && entries.size() > 1) {
+    // Making sure the number of elements is divisible by
+    // FUSION_BUFFER_ATOMIC_UNIT for improved performance
+    int div = local_size * FUSION_BUFFER_ATOMIC_UNIT;
+    num_elements = ((num_elements + div - 1) / div) * div;
+    buffer_len = num_elements * element_size;
+  }
 
-  // // Split the elements into two groups: num_elements_per_rank*local_size,
-  // // and num_elements_remaining. Cross-node reduction for the first group
-  // // is done by all local_rank's in parallel, while for the second group
-  // // it it is only done by the root_rank. If the cluster is not
-  // // homogeneous first group is zero, and root_rank is 0.
+  // Split the elements into two groups: num_elements_per_rank*local_size,
+  // and num_elements_remaining. Cross-node reduction for the first group
+  // is done by all local_rank's in parallel, while for the second group
+  // it it is only done by the root_rank. If the cluster is not
+  // homogeneous first group is zero, and root_rank is 0.
 
-  // // Homogeneous case:
-  // // For the part of data divisible by local_size, perform NCCL
-  // // ReduceScatter - Parallelized MPI Allreduce - NCCL Allgather. For the
-  // // non-divisible part (if any), do NCCL Reduce (at rank local_size-1),
-  // // MPI Allreduce (across rank (local_size-1)'s), and NCCL Bcast
+  // Homogeneous case:
+  // For the part of data divisible by local_size, perform NCCL
+  // ReduceScatter - Parallelized MPI Allreduce - NCCL Allgather. For the
+  // non-divisible part (if any), do NCCL Reduce (at rank local_size-1),
+  // MPI Allreduce (across rank (local_size-1)'s), and NCCL Bcast
 
-  // int64_t num_elements_per_rank = global_state_->controller->IsHomogeneous()
-  //                                     ? num_elements / local_size
-  //                                     : 0;
+  int64_t num_elements_per_rank = global_state_->controller->IsHomogeneous()
+                                      ? num_elements / local_size
+                                      : 0;
 
-  // size_t buffer_len_per_rank = element_size * num_elements_per_rank;
+  size_t buffer_len_per_rank = element_size * num_elements_per_rank;
 
-  // void* buffer_data_at_rank_offset =
-  //     (uint8_t*)buffer_data + buffer_len_per_rank * local_rank;
+  void* buffer_data_at_rank_offset =
+      (uint8_t*)buffer_data + buffer_len_per_rank * local_rank;
 
-  // int64_t num_elements_remaining = global_state_->controller->IsHomogeneous()
-  //                                      ? num_elements % local_size
-  //                                      : num_elements;
+  int64_t num_elements_remaining = global_state_->controller->IsHomogeneous()
+                                       ? num_elements % local_size
+                                       : num_elements;
 
-  // size_t buffer_len_remaining = element_size * num_elements_remaining;
+  size_t buffer_len_remaining = element_size * num_elements_remaining;
 
-  // void* buffer_data_remainder =
-  //     (uint8_t*)buffer_data + buffer_len_per_rank * local_size;
+  void* buffer_data_remainder =
+      (uint8_t*)buffer_data + buffer_len_per_rank * local_size;
 
-  // void* fused_input_data_remainder =
-  //     (uint8_t*)fused_input_data + buffer_len_per_rank * local_size;
+  void* fused_input_data_remainder =
+      (uint8_t*)fused_input_data + buffer_len_per_rank * local_size;
 
-  // int root_rank =
-  //     global_state_->controller->IsHomogeneous() ? local_size - 1 : 0;
-  // bool is_root_rank = local_rank == root_rank;
+  int root_rank =
+      global_state_->controller->IsHomogeneous() ? local_size - 1 : 0;
+  bool is_root_rank = local_rank == root_rank;
 
-  // int64_t total_num_elements =
-  //     is_root_rank ? num_elements_per_rank + num_elements_remaining
-  //                  : num_elements_per_rank;
-  // int64_t total_buffer_len = is_root_rank
-  //                                ? buffer_len_per_rank + buffer_len_remaining
-  //                                : buffer_len_per_rank;
+  int64_t total_num_elements =
+      is_root_rank ? num_elements_per_rank + num_elements_remaining
+                   : num_elements_per_rank;
+  int64_t total_buffer_len = is_root_rank
+                                 ? buffer_len_per_rank + buffer_len_remaining
+                                 : buffer_len_per_rank;
+
+  auto& timeline = global_state_->timeline;
+  if (num_elements_per_rank > 0) {
+    auto nccl_result = ncclReduceScatter(fused_input_data,
+                                         buffer_data_at_rank_offset,
+                                         (size_t) num_elements_per_rank,
+                                         GetNCCLDataType(first_entry.tensor),
+                                         ncclSum, *nccl_comm_, *stream_);
+    nccl_context_->ErrorCheck("ncclReduceScatter", nccl_result);
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
+    }
+  }
+
+  if (num_elements_remaining > 0) {
+    // Reduce the remaining data at local_size-1 to append to
+    // existing buffer
+    auto nccl_result = ncclReduce(fused_input_data_remainder,
+                                  buffer_data_remainder,
+                                  (size_t) num_elements_remaining,
+                                  GetNCCLDataType(first_entry.tensor), ncclSum,
+                                  root_rank, *nccl_comm_, *stream_);
+    nccl_context_->ErrorCheck("ncclReduce", nccl_result);
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, NCCL_REDUCE, *stream_);
+    }
+  }
+
+  if (global_state_->controller->IsHomogeneous() || is_root_rank) {
+    // cudaHostAlloc is significantly slower than malloc.  Pre-allocating
+    // a buffer is not safe since the tensor can be arbitrarily large.
+    host_buffer_ = malloc(total_buffer_len);
+
+    // Synchronize.
+    cuda_context_->WaitForEvents(event_queue_, entries, timeline);
+
+    // According to https://docs.nvidia.com/cuda/cuda-runtime-api/
+    // api-sync-behavior.html#api-sync-behavior__memcpy-async,
+    // cudaMemcpyAsync is synchronous with respect to the host, so we
+    // memcpy (effectively) synchronously to generate an accurate timeline
+    timeline.ActivityStartAll(entries, MEMCPY_IN_HOST_BUFFER);
+    cuda_context_->ErrorCheck("cudaMemcpyAsync",
+                              cudaMemcpyAsync(host_buffer_, buffer_data_at_rank_offset,
+                                              total_buffer_len, cudaMemcpyDeviceToHost,
+                                              *stream_));
+    timeline.ActivityEndAll(entries);
+
+    timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
+    int op = MPI_Allreduce(MPI_IN_PLACE, host_buffer_,
+                           (int) total_num_elements,
+                           mpi_context_->GetMPIDataType(first_entry.tensor),
+                           mpi_context_->GetMPISumOp(first_entry.tensor->dtype()),
+                           mpi_context_->GetMPICommunicator(Communicator::CROSS));
+    if (op != MPI_SUCCESS) {
+      throw std::runtime_error("MPI_Allreduce failed, see MPI output for details.");
+    }
+    timeline.ActivityEndAll(entries);
+
+    timeline.ActivityStartAll(entries, MEMCPY_OUT_HOST_BUFFER);
+    cuda_context_->ErrorCheck("cudaMemcpyAsync",
+                              cudaMemcpyAsync(buffer_data_at_rank_offset, host_buffer_,
+                                              total_buffer_len, cudaMemcpyHostToDevice,
+                                              *stream_));
+    timeline.ActivityEndAll(entries);
+  }
+
+  if (num_elements_per_rank > 0) {
+    nccl_context_->ErrorCheck("ncclAllGather",
+                              ncclAllGather(buffer_data_at_rank_offset, buffer_data,
+                                            (size_t) num_elements_per_rank,
+                                            GetNCCLDataType(first_entry.tensor),
+                                            *nccl_comm_, *stream_));
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, NCCL_ALLGATHER, *stream_);
+    }
+  }
+  if (num_elements_remaining > 0) {
+    nccl_context_->ErrorCheck("ncclBcast",
+                              ncclBcast(buffer_data_remainder,
+                                        (size_t) num_elements_remaining,
+                                        GetNCCLDataType(first_entry.tensor), root_rank,
+                                        *nccl_comm_, *stream_));
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
+    }
+  }
+
+  // Copy memory out of the fusion buffer.
+  if (entries.size() > 1) {
+    MemcpyOutFusionBuffer(buffer_data, entries);
+
+    if (global_state_->timeline.Initialized()) {
+      cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
+    }
+  }
+
+  return FinalizeCUDAQueue(entries);
+}
+
+bool NCCLHierarchicalAllreduce::Enabled(const ParameterManager& param_manager,
+                                        const std::vector<TensorTableEntry>& entries,
+                                        const Response& response) const {
+  if (!NCCLAllreduce::Enabled(param_manager, entries, response)) {
+    return false;
+  }
+  return param_manager.HierarchicalAllreduce();
+}
+
+void NCCLHierarchicalAllreduce::PopulateNCCLCommStrategy(int& nccl_rank, int& nccl_size,
+                                                         Communicator& nccl_id_bcast_comm) {
+  nccl_rank = global_state_->controller->GetLocalRank();
+  nccl_size = global_state_->controller->GetLocalSize();
+  nccl_id_bcast_comm = Communicator::LOCAL;
+}
+
+Status
+NCCLPslHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
+                                   const Response& response) {
+  auto& first_entry = entries[0];
+
+  // Determine GPU IDs of the devices participating in this communicator.
+  std::vector<int32_t> nccl_device_map;
+  nccl_device_map.reserve(
+      global_state_->controller->GetLocalCommRanks().size());
+  for (int rank : global_state_->controller->GetLocalCommRanks()) {
+    nccl_device_map.push_back(response.devices()[rank]);
+  }
+
+  InitCUDA(entries);
+  InitNCCLComm(entries, nccl_device_map);
+  InitCUDAQueue(entries, response);
+
+  const void* fused_input_data;
+  void* buffer_data;
+  size_t buffer_len;
 
   bool is_root_rank = global_state_->controller->GetLocalRank() == 0;
 
-  std::vector<std::unique_ptr<char[]>> host_buffers;
+  static std::vector<std::vector<char>> host_buffers;
   std::vector<cudaEvent_t> events;
   events.resize(entries.size());
 
@@ -251,8 +404,11 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     nccl_context_->ErrorCheck("ncclReduce", nccl_result);
 
     if (is_root_rank) {
-      host_buffers.emplace_back(new char[buffer_len]);
-      auto host_buffer_ = (void*)host_buffers[layerid].get();
+      if (host_buffers.size() <= layerid) {
+        host_buffers.push_back(std::vector<char>());
+      }
+      host_buffers[layerid].resize(buffer_len);
+      auto host_buffer_ = (void*)host_buffers[layerid].data();
 
       cuda_context_->ErrorCheck("cudaMemcpyAsync",
                                 cudaMemcpyAsync(host_buffer_, buffer_data,
@@ -273,7 +429,7 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
       buffer_data = (void*) e.output->data();
       buffer_len = (size_t) e.output->size();
       int num_elements = e.tensor->shape().num_elements();
-      auto host_buffer_ = (void*)host_buffers[layerid].get();
+      auto host_buffer_ = (void*)host_buffers[layerid].data();
       auto& event = events[layerid];
       
       cuda_context_->ErrorCheck("cudaEventSynchronize", cudaEventSynchronize(event));
@@ -313,155 +469,10 @@ NCCLHierarchicalAllreduce::Execute(std::vector<TensorTableEntry>& entries,
     layerid += 1;
   }
 
-  
-  // // Split the elements into two groups: num_elements_per_rank*local_size,
-  // // and num_elements_remaining. Cross-node reduction for the first group
-  // // is done by all local_rank's in parallel, while for the second group
-  // // it it is only done by the root_rank. If the cluster is not
-  // // homogeneous first group is zero, and root_rank is 0.
-
-  // // Homogeneous case:
-  // // For the part of data divisible by local_size, perform NCCL
-  // // ReduceScatter - Parallelized MPI Allreduce - NCCL Allgather. For the
-  // // non-divisible part (if any), do NCCL Reduce (at rank local_size-1),
-  // // MPI Allreduce (across rank (local_size-1)'s), and NCCL Bcast
-
-  // int64_t num_elements_per_rank =
-  //     global_state_->is_homogeneous
-  //     ? num_elements / global_state_->local_size
-  //     : 0;
-
-  // size_t buffer_len_per_rank = element_size * num_elements_per_rank;
-
-  // void* buffer_data_at_rank_offset =
-  //     (uint8_t*) buffer_data +
-  //     buffer_len_per_rank * global_state_->local_rank;
-
-  // int64_t num_elements_remaining =
-  //     global_state_->is_homogeneous
-  //     ? num_elements % global_state_->local_size
-  //     : num_elements;
-
-  // size_t buffer_len_remaining = element_size * num_elements_remaining;
-
-  // void* buffer_data_remainder =
-  //     (uint8_t*) buffer_data +
-  //     buffer_len_per_rank * global_state_->local_size;
-
-  // void* fused_input_data_remainder =
-  //     (uint8_t*) fused_input_data +
-  //     buffer_len_per_rank * global_state_->local_size;
-
-  // int root_rank =
-  //     global_state_->is_homogeneous ? global_state_->local_size - 1 : 0;
-  // bool is_root_rank = global_state_->local_rank == root_rank;
-
-  // int64_t total_num_elements =
-  //     is_root_rank ? num_elements_per_rank + num_elements_remaining
-  //                  : num_elements_per_rank;
-  // int64_t total_buffer_len =
-  //     is_root_rank ? buffer_len_per_rank + buffer_len_remaining
-  //                  : buffer_len_per_rank;
-
-  // auto& timeline = global_state_->timeline;
-  // if (num_elements_per_rank > 0) {
-  //   auto nccl_result = ncclReduceScatter(fused_input_data,
-  //                                        buffer_data_at_rank_offset,
-  //                                        (size_t) num_elements_per_rank,
-  //                                        GetNCCLDataType(first_entry.tensor),
-  //                                        ncclSum, *nccl_comm_, *stream_);
-  //   nccl_context_->ErrorCheck("ncclReduceScatter", nccl_result);
-  //   if (global_state_->timeline.Initialized()) {
-  //     cuda_context_->RecordEvent(event_queue_, NCCL_REDUCESCATTER, *stream_);
-  //   }
-  // }
-
-  // if (num_elements_remaining > 0) {
-  //   // Reduce the remaining data at local_size-1 to append to
-  //   // existing buffer
-  //   auto nccl_result = ncclReduce(fused_input_data_remainder,
-  //                                 buffer_data_remainder,
-  //                                 (size_t) num_elements_remaining,
-  //                                 GetNCCLDataType(first_entry.tensor), ncclSum,
-  //                                 root_rank, *nccl_comm_, *stream_);
-  //   nccl_context_->ErrorCheck("ncclReduce", nccl_result);
-  //   if (global_state_->timeline.Initialized()) {
-  //     cuda_context_->RecordEvent(event_queue_, NCCL_REDUCE, *stream_);
-  //   }
-  // }
-
-  // if (global_state_->is_homogeneous || is_root_rank) {
-  //   // cudaHostAlloc is significantly slower than malloc.  Pre-allocating
-  //   // a buffer is not safe since the tensor can be arbitrarily large.
-  //   host_buffer_ = malloc(total_buffer_len);
-
-  //   // Synchronize.
-  //   cuda_context_->WaitForEvents(event_queue_, entries, timeline);
-
-  //   // According to https://docs.nvidia.com/cuda/cuda-runtime-api/
-  //   // api-sync-behavior.html#api-sync-behavior__memcpy-async,
-  //   // cudaMemcpyAsync is synchronous with respect to the host, so we
-  //   // memcpy (effectively) synchronously to generate an accurate timeline
-  //   timeline.ActivityStartAll(entries, MEMCPY_IN_HOST_BUFFER);
-  //   cuda_context_->ErrorCheck("cudaMemcpyAsync",
-  //                             cudaMemcpyAsync(host_buffer_, buffer_data_at_rank_offset,
-  //                                             total_buffer_len, cudaMemcpyDeviceToHost,
-  //                                             *stream_));
-  //   timeline.ActivityEndAll(entries);
-
-  //   timeline.ActivityStartAll(entries, MPI_ALLREDUCE);
-  //   int op = PSL_Allreduce(MPI_IN_PLACE, host_buffer_,
-  //                          (int) total_num_elements,
-  //                          mpi_context_->GetMPIDataType(first_entry.tensor),
-  //                          MPI_OP_NULL, //mpi_context_->GetMPISumOp(first_entry.tensor->dtype()),
-  //                          mpi_context_->GetMPICommunicator(Communicator::CROSS));
-  //   if (op != MPI_SUCCESS) {
-  //     throw std::logic_error("MPI_Allreduce failed, see MPI output for details.");
-  //   }
-  //   timeline.ActivityEndAll(entries);
-
-  //   timeline.ActivityStartAll(entries, MEMCPY_OUT_HOST_BUFFER);
-  //   cuda_context_->ErrorCheck("cudaMemcpyAsync",
-  //                             cudaMemcpyAsync(buffer_data_at_rank_offset, host_buffer_,
-  //                                             total_buffer_len, cudaMemcpyHostToDevice,
-  //                                             *stream_));
-  //   timeline.ActivityEndAll(entries);
-  // }
-
-  // if (num_elements_per_rank > 0) {
-  //   nccl_context_->ErrorCheck("ncclAllGather",
-  //                             ncclAllGather(buffer_data_at_rank_offset, buffer_data,
-  //                                           (size_t) num_elements_per_rank,
-  //                                           GetNCCLDataType(first_entry.tensor),
-  //                                           *nccl_comm_, *stream_));
-  //   if (global_state_->timeline.Initialized()) {
-  //     cuda_context_->RecordEvent(event_queue_, NCCL_ALLGATHER, *stream_);
-  //   }
-  // }
-  // if (num_elements_remaining > 0) {
-  //   nccl_context_->ErrorCheck("ncclBcast",
-  //                             ncclBcast(buffer_data_remainder,
-  //                                       (size_t) num_elements_remaining,
-  //                                       GetNCCLDataType(first_entry.tensor), root_rank,
-  //                                       *nccl_comm_, *stream_));
-  //   if (global_state_->timeline.Initialized()) {
-  //     cuda_context_->RecordEvent(event_queue_, NCCL_BCAST, *stream_);
-  //   }
-  // }
-
-  // // Copy memory out of the fusion buffer.
-  // if (entries.size() > 1) {
-  //   MemcpyOutFusionBuffer(buffer_data, entries);
-
-  //   if (global_state_->timeline.Initialized()) {
-  //     cuda_context_->RecordEvent(event_queue_, MEMCPY_OUT_FUSION_BUFFER, *stream_);
-  //   }
-  // }
-
   return FinalizeCUDAQueue(entries);
 }
 
-bool NCCLHierarchicalAllreduce::Enabled(const ParameterManager& param_manager,
+bool NCCLPslHierarchicalAllreduce::Enabled(const ParameterManager& param_manager,
                                         const std::vector<TensorTableEntry>& entries,
                                         const Response& response) const {
   if (!NCCLAllreduce::Enabled(param_manager, entries, response)) {
@@ -470,7 +481,7 @@ bool NCCLHierarchicalAllreduce::Enabled(const ParameterManager& param_manager,
   return param_manager.HierarchicalAllreduce();
 }
 
-void NCCLHierarchicalAllreduce::PopulateNCCLCommStrategy(int& nccl_rank, int& nccl_size,
+void NCCLPslHierarchicalAllreduce::PopulateNCCLCommStrategy(int& nccl_rank, int& nccl_size,
                                                          Communicator& nccl_id_bcast_comm) {
   nccl_rank = global_state_->controller->GetLocalRank();
   nccl_size = global_state_->controller->GetLocalSize();

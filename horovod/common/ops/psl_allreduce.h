@@ -339,11 +339,7 @@ namespace horovod {
     	    grad_buffer = &grad_buffer[nghrCount];
     	    recv_buffer = &recv_buffer[nghrCount];
     	  }
-    	  if (level == 1) {
-    	    DeviceImpl<T>::ScaleAdd(myCount, 0.5, grad_buffer , 0.5, recv_buffer);
-    	  } else {
-    	    PairwiseReduceWithComm<T>(grad_buffer, recv_buffer, myCount, layerid, reduction_comms[comm_index], (rank & level) == 0);
-    	  }
+    	  PairwiseReduceWithComm<T>(grad_buffer, recv_buffer, myCount, layerid, reduction_comms[comm_index], (rank & level) == 0);
         }
 
     	for (level = (size >> 1); level > 0; level = (level >> 1)) {

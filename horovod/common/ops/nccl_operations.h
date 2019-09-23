@@ -81,6 +81,28 @@ private:
 
   MPIContext* mpi_context_;
 };
+
+class NCCLPslHierarchicalAllreduce : public NCCLAllreduce {
+public:
+  NCCLPslHierarchicalAllreduce(NCCLContext* nccl_context, MPIContext* mpi_context,
+                            CUDAContext* cuda_context,
+                            HorovodGlobalState* global_state)
+      : NCCLAllreduce(nccl_context, cuda_context, global_state),
+        mpi_context_(mpi_context){};
+
+  Status Execute(std::vector<TensorTableEntry>& entries,
+                 const Response& response) override;
+
+  bool Enabled(const ParameterManager& param_manager,
+               const std::vector<TensorTableEntry>& entries,
+               const Response& response) const override;
+
+private:
+  void PopulateNCCLCommStrategy(int& nccl_rank, int& nccl_size,
+                                Communicator& nccl_id_bcast_comm) override;
+
+  MPIContext* mpi_context_;
+};
 #endif
 
 } // namespace common

@@ -203,6 +203,7 @@ def _make_allreduce_grads_fn(name, device_dense, device_sparse,
                          else grad for grad in grads]
 
             return [allreduce(grad,
+                              average=False, #olsaarik: make sum the default
                               device_dense=device_dense,
                               device_sparse=device_sparse,
                               compression=compression)

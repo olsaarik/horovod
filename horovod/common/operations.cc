@@ -149,9 +149,18 @@ OperationManager* CreateOperationManager(HorovodGlobalState& state) {
         new MPI_CUDAAllreduce(&mpi_context, &cuda_context, &state)));
 
 #elif HAVE_NCCL && HOROVOD_GPU_ALLREDUCE == 'N'
-    allreduce_ops.push_back(
-        std::shared_ptr<AllreduceOp>(new NCCLHierarchicalAllreduce(
-            &nccl_context, &mpi_context, &cuda_context, &state)));
+
+    auto horovod_psl_allreduce =
+        std::getenv("HOROVOD_PSL_ALLREDUCE");
+    if (horovod_psl_allreduce != nullptr && std::strtol(horovod_psl_allreduce, nullptr, 10) > 0) {
+      allreduce_ops.push_back(
+          std::shared_ptr<AllreduceOp>(new NCCLPslHierarchicalAllreduce(
+              &nccl_context, &mpi_context, &cuda_context, &state)));
+    } else {
+      allreduce_ops.push_back(
+          std::shared_ptr<AllreduceOp>(new NCCLHierarchicalAllreduce(
+              &nccl_context, &mpi_context, &cuda_context, &state)));
+    }
 
 #elif HAVE_DDL && HOROVOD_GPU_ALLREDUCE == 'D'
     allreduce_ops.push_back(std::shared_ptr<AllreduceOp>(
