@@ -20,6 +20,7 @@
 #include <stack>
 #include <immintrin.h>
 #include <emmintrin.h>
+#include <float.h>
 
 #include "../../common.h"
 #include "../../global_state.h"
@@ -129,9 +130,9 @@ protected:
       bnormsq = 0.;
 
       for (int i = 0; i < count; i++) {
-          dotProduct += a[i] * b[i];
-          anormsq += a[i] * a[i];
-          bnormsq += b[i] * b[i];
+          dotProduct += (double)a[i] * (double)b[i];
+          anormsq += (double)a[i] * (double)a[i];
+          bnormsq += (double)b[i] * (double)b[i];
       }
   }
   
@@ -365,6 +366,7 @@ protected:
                                    bool isLeftNeighbor,
                                    std::vector<double>& normAndDots,
                                    HorovodGlobalState *global_state) {
+    static double sqrt_double_min = std::sqrt(DBL_MIN);
     int per_element_size = GetPerElementSize(horovod_datatype);
 
     // Compute the dot product and squared norms using the elements of the tensors
@@ -394,10 +396,12 @@ protected:
 
       double acoeff = 1;
       double bcoeff = 1;
-      if (anormsq >= 1e-8)
+      if (anormsq >= sqrt_double_min){
         acoeff = 1.0 - dotProduct / anormsq * 0.5;
-      if (bnormsq >= 1e-8)
+			}
+      if (bnormsq >= sqrt_double_min){
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
+			}
 
       // If a and b are orthogonal, then dotProduct is zero and this is a sum.
       // If a and b are parallel, then dotProduct is |a|*|b| and this ends up as an average.
