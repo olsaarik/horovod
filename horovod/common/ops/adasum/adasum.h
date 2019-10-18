@@ -17,6 +17,7 @@
 #define HOROVOD_ADASUM_H
 
 #include <cstring>
+#include <stack>
 #include <immintrin.h>
 #include <emmintrin.h>
 
@@ -169,13 +170,15 @@ protected:
   // horovod_datatype: the element type of grad_buffer.
   // tensor_counts: is a list of how many elements grad_buffer contains for each tensor
   //                involved in the allreduce. It should contain a 0 if this rank holds
-  //                no data for the tensor (see start_level below for when this can happen).
-  // start_level: set to 1 to perform all levels of the operation. When set to n>1 the
-  //              first n-1 levels are skipped. This is useful when the communication inside
-  //              the node is implemented using another reduce-scatter algorithm, e.g. the
-  //              one in NCCL, which may be desireable on some hardware configurations. When
-  //              start_level>1, tensor_counts must be set according to the slices owned by
-  //              this rank.
+  //                no data for the tensor (see ranks_per_tensor below for when this can
+  //                happen).
+  // ranks_per_tensor: how many ranks are tensors initially shared across. Set to 1 if
+  //                   each rank holds unreduced data. When set to n>1 the first log_2(n)
+  //                   levels of VHDD are skipped. This is useful when the communication 
+  //                   inside the node is implemented using another mechanism, e.g. NCCL's
+  //                   reduce-scatter and allgather operations before and after, respectively.
+  //                   When ranks_per_tensor>1, tensor_counts must be set according to the
+  //                   slices owned by this rank.
   // communicator: the communicator to reduce with.
   // tag: a value used as the message tag for each send/recv in this algorithm. This is
   //      useful for multithreaded scenarios. Remember to also create separate
@@ -189,8 +192,8 @@ protected:
                       T* grad_buffer,
                       T* recv_buffer,
                       DataType horovod_datatype,
-                      std::vector<int>& tensor_counts,
-                      int start_level,
+                      std::vector<int> tensor_counts,
+                      int ranks_per_tensor,
                       Communicator_type communicator,
                       int tag,
                       Communicator_type* reduction_comms,
@@ -203,91 +206,84 @@ protected:
       throw std::logic_error(
           "Running Adasum with non-power-of-two ranks is not supported yet.");
     }
-    std::vector<std::vector<int>> nghrCountVec;
-    std::vector<double> normAndDots(tensor_counts.size()*3 * 2);
 
-    int nearest_power_2 = 1;
-    for (nearest_power_2 = 1; (nearest_power_2 << 1) <= size;
-        nearest_power_2 = (nearest_power_2 << 1)) {
+    // Stack of total number of elements owned by the neighbor at the corresponding
+    // level of the algorithm. This stack is built during the first phase of the
+    // algorithm and is unwound during the second phase of the algorithm.
+    std::stack<int> nghrCounts;
+
+    // Buffer used for the distributed dot product and squared norm computations.
+    std::vector<double> normAndDots(tensor_counts.size()*3);
+
+    // Total number of elements owned by this rank
+    int myCount = 0;
+    for (int i = 0; i < tensor_counts.size(); i++) {
+      myCount += tensor_counts[i];
     }
-    int remaining_non_power_2 = size - nearest_power_2;
-    int level;
 
-    int nghrCountVec_index = 0;
-    int orgSize = size;
-    size = nearest_power_2;
-
-    int total_counts_sum = 0;
-    for (int i = 0; i < tensor_counts.size(); i++)
-      total_counts_sum += tensor_counts[i];
-    int myCount = total_counts_sum;
+    // First phase of VHDD. On each level this rank is paired with a neighbor,
+    // with to which it sends one half of its elements and from which it receives
+    // and reduces the other half (vector-halving). On each level the distance to
+    // the neighbor doubles (distance-doubling).
+    int distance;
     int comm_index;
-    for (level = 1, comm_index = 0; level < size;
-        level = (level << 1), comm_index++) {
-      if (level < start_level) {
+    for (distance = 1, comm_index = 0; distance < size;
+        distance = (distance << 1), comm_index++) {
+      if (distance < ranks_per_tensor) {
         continue;
       }
 
-      int neighbor_rank = rank ^ level;
+      int neighbor_rank = rank ^ distance;
       int nghrCount = 0;
       int sendOffset = 0;
       int recvOffset = 0;
       int firstHalfMyCount = (myCount >> 1);
       int secondHalfMyCount = myCount - firstHalfMyCount;
+      bool isLeftNeighbor = (rank & distance) == 0;
 
-      nghrCountVec.emplace_back();
-      nghrCountVec[nghrCountVec_index].resize(tensor_counts.size());
-
-      int myCountSoFar = 0;
-      int nghrCountSoFar = 0;
-      if ((rank & level) != 0) {
+      // If we are the left neighbor we send the second half of our data and if we are
+      // the right neighbor we send the first half. Also Update how many elements of
+      // each tensor this rank will hold after this level.
+      if (isLeftNeighbor) {
+        myCount = firstHalfMyCount;
+        nghrCount = secondHalfMyCount;
+        sendOffset = myCount;
+        recvOffset = 0;
+        
+        // We lose elements from the end
+        int nghrCountSoFar = 0;
+        for (int i = tensor_counts.size() - 1; i >= 0; --i) {
+          if (nghrCountSoFar + tensor_counts[i] <= nghrCount){
+            nghrCountSoFar += tensor_counts[i];
+            tensor_counts[i] = 0;
+          } else {
+            tensor_counts[i] -= (nghrCount - nghrCountSoFar);
+            break;
+          }
+        }
+      } else {
         myCount = secondHalfMyCount;
         nghrCount = firstHalfMyCount;
         sendOffset = 0;
         recvOffset = nghrCount;
 
-        for (int i = 0; i < tensor_counts.size(); i++){
-          if (nghrCountSoFar <= nghrCount){
-            if (nghrCountSoFar+tensor_counts[i] <= nghrCount){
-              nghrCountVec[nghrCountVec_index][i] = tensor_counts[i];
-              tensor_counts[i] = 0;
-            } else {
-              nghrCountVec[nghrCountVec_index][i] = nghrCount - nghrCountSoFar; // should not be negative
-              tensor_counts[i] = tensor_counts[i] - (nghrCount - nghrCountSoFar); // should not be negative
-            }
-          } else {
-            tensor_counts[i] = tensor_counts[i];
-            nghrCountVec[nghrCountVec_index][i] = 0;
-          }
-          nghrCountSoFar += nghrCountVec[nghrCountVec_index][i];
-          myCountSoFar += tensor_counts[i];
-        }
-      } else {
-        myCount = firstHalfMyCount;
-        nghrCount = secondHalfMyCount;
-        sendOffset = myCount;
-        recvOffset = 0;
-
-        for (int i = 0; i < tensor_counts.size(); i++){
-          if (myCountSoFar <= myCount){
-            if (myCountSoFar+tensor_counts[i] <= myCount){
-              tensor_counts[i] = tensor_counts[i];
-              nghrCountVec[nghrCountVec_index][i] = 0;
-            } else {
-              nghrCountVec[nghrCountVec_index][i] = tensor_counts[i] - (myCount - myCountSoFar); // should not be negative
-              tensor_counts[i] = myCount - myCountSoFar; // should not be negative
-            }
-          } else {
-            nghrCountVec[nghrCountVec_index][i] = tensor_counts[i];
+        // We lose elements from the beginning
+        int nghrCountSoFar = 0;
+        for (int i = 0; i < tensor_counts.size(); ++i) {
+          if (nghrCountSoFar + tensor_counts[i] <= nghrCount){
+            nghrCountSoFar += tensor_counts[i];
             tensor_counts[i] = 0;
+          } else {
+            tensor_counts[i] -= (nghrCount - nghrCountSoFar);
+            break;
           }
-          nghrCountSoFar += nghrCountVec[nghrCountVec_index][i];
-          myCountSoFar += tensor_counts[i];
         }
       }
 
-      nghrCountVec_index++;
+      // Remember how many elements we are giving to our neighbor
+      nghrCounts.emplace(nghrCount);
 
+      // Exchange my half with neighbor's half
       this->PointToPointSendRecv((char*)(&grad_buffer[sendOffset]),
                                  nghrCount * per_element_size,
                                  (char*)(&recv_buffer[recvOffset]),
@@ -297,10 +293,14 @@ protected:
                                  tag,
                                  communicator,
                                  global_state);
-      if ((rank & level) != 0) {
+      
+      // If we gave away our first half adjust the starting point
+      if (!isLeftNeighbor) {
         grad_buffer = &grad_buffer[nghrCount];
         recv_buffer = &recv_buffer[nghrCount];
       }
+
+      // Apply the Adasum operation inside the current reduction group
       FusedPairwiseReduceWithComm(entries,
                                   (uint8_t*)grad_buffer,
                                   (uint8_t*)recv_buffer,
@@ -308,28 +308,31 @@ protected:
                                   tensor_counts,
                                   tag,
                                   reduction_comms[comm_index],
-                                  (rank & level) == 0,
+                                  isLeftNeighbor,
                                   normAndDots,
                                   global_state);
     }
 
-    for (level = (size >> 1); level > 0; level = (level >> 1)) {
-      if (level < start_level){
+    // Second phase of VHDD. This is essentially an all gather operation.
+    // On each level this rank sends all of its elements to its neighbor and
+    // receives all of its neighbors elements. The neighbors are those of
+    // the first phase in reverse.
+    for (distance = (size >> 1); distance > 0; distance = (distance >> 1)) {
+      if (distance < ranks_per_tensor){
         continue;
       }
-      int neighbor_rank = rank ^ level;
+      int neighbor_rank = rank ^ distance;
+      bool isLeftNeighbor = (rank & distance) == 0;
 
-      nghrCountVec_index--;
-      int nghrCount = 0;
-      for (int i = 0; i < tensor_counts.size(); i++){
-        nghrCount += nghrCountVec[nghrCountVec_index][i];
-        tensor_counts[i] += nghrCountVec[nghrCountVec_index][i];
-      }
+      // Receive as many elements from our neighbor as we sent in the first phase
+      int nghrCount = nghrCounts.top();
+      nghrCounts.pop();
 
-      if ((rank & level) == 0) {
-        recv_buffer = &grad_buffer[myCount];
-      } else {
+      // Receive into the same position as we sent data from
+      if (isLeftNeighbor) {
         recv_buffer = &grad_buffer[-nghrCount];
+      } else {
+        recv_buffer = &grad_buffer[myCount];
       }
       this->PointToPointSendRecv(grad_buffer,
                                  myCount * per_element_size,
@@ -340,21 +343,18 @@ protected:
                                  tag,
                                  communicator,
                                  global_state);
-      if ((rank & level) != 0) {
+      myCount += nghrCount;
+
+      // If we received a new first half adjust the starting point
+      if (!isLeftNeighbor) {
         grad_buffer = &grad_buffer[-nghrCount];
       }
-      myCount += nghrCount;
     }
-    size = orgSize;
   }
 
-  virtual void SumAllreduceWithComm(std::vector<TensorTableEntry>& entries,
-                                    void* data,
-                                    int num_elements,
-                                    DataType horovod_datatype,
-                                    Communicator_type comm,
-                                    HorovodGlobalState *global_state) = 0;
-
+  // Applies the Adasum operation to reduce two fused sets of tensors split
+  // across multiple ranks. The communicator passed to this function contains
+  // exactly the ranks that the tensors are split across.
   void FusedPairwiseReduceWithComm(std::vector<TensorTableEntry>& entries,
                                    uint8_t* a,
                                    uint8_t* b,
@@ -366,6 +366,9 @@ protected:
                                    std::vector<double>& normAndDots,
                                    HorovodGlobalState *global_state) {
     int per_element_size = GetPerElementSize(horovod_datatype);
+
+    // Compute the dot product and squared norms using the elements of the tensors
+    // held on this rank.
     int bytesSoFar = 0;
     for (size_t i = 0; i < tensor_counts.size(); i++){
       double dotProduct = 0.;
@@ -374,30 +377,20 @@ protected:
 
       DispatchComputeDotAndNormSqrds(&a[bytesSoFar], &b[bytesSoFar], horovod_datatype, tensor_counts[i], dotProduct, anormsq, bnormsq, layerid);
       normAndDots[i*3] = dotProduct;
-      if (isLeftNeighbor) {
-        normAndDots[i*3+1] = anormsq;
-        normAndDots[i*3+2] = bnormsq;
-      } else {
-        normAndDots[i*3+1] = bnormsq;
-        normAndDots[i*3+2] = anormsq;
-      }
+      normAndDots[i*3+1] = isLeftNeighbor ? anormsq : bnormsq;
+      normAndDots[i*3+2] = isLeftNeighbor ? bnormsq : anormsq;
       bytesSoFar += tensor_counts[i] * per_element_size;
     }
 
+    // Sum all local dot products and squared norms to produce the true values.
     SumAllreduceWithComm(entries, (void*)normAndDots.data(), 3*tensor_counts.size(), DataType::HOROVOD_FLOAT64, comm, global_state);
 
+    // Apply the Adasum operation to each tensor
     bytesSoFar = 0;
     for (size_t i = 0; i < tensor_counts.size(); i++){
       double dotProduct = normAndDots[i*3];
-      double anormsq;
-      double bnormsq;
-      if (isLeftNeighbor) {
-        anormsq = normAndDots[i*3+1];
-        bnormsq = normAndDots[i*3+2];
-      } else {
-        bnormsq = normAndDots[i*3+1];
-        anormsq = normAndDots[i*3+2];
-      }
+      double anormsq = normAndDots[i*3+(isLeftNeighbor ? 1 : 2)];
+      double bnormsq = normAndDots[i*3+(isLeftNeighbor ? 2 : 1)];
 
       double acoeff = 1;
       double bcoeff = 1;
@@ -406,6 +399,8 @@ protected:
       if (bnormsq >= 1e-8)
         bcoeff = 1.0 - dotProduct / bnormsq * 0.5;
 
+      // If a and b are orthogonal, then dotProduct is zero and this is a sum.
+      // If a and b are parallel, then dotProduct is |a|*|b| and this ends up as an average.
       DispatchScaledAdd(horovod_datatype, tensor_counts[i], acoeff, &a[bytesSoFar], bcoeff, &b[bytesSoFar], layerid);
       bytesSoFar += tensor_counts[i] * per_element_size;
     }
@@ -415,7 +410,7 @@ protected:
                               void* grad_buffer,
                               void* recv_buffer,
                               std::vector<int>& tensor_counts,
-                              int start_level,
+                              int ranks_per_tensor,
                               Communicator_type communicator,
                               int tag,
                               Communicator_type* reduction_comms,
@@ -423,13 +418,13 @@ protected:
                               HorovodGlobalState *global_state) {
       switch(data_type) {
           case DataType::HOROVOD_FLOAT16:
-            FusedAllreduce(entries, (uint16_t*)grad_buffer, (uint16_t*)recv_buffer, data_type, tensor_counts, start_level, communicator, tag, reduction_comms, global_state);
+            FusedAllreduce(entries, (uint16_t*)grad_buffer, (uint16_t*)recv_buffer, data_type, tensor_counts, ranks_per_tensor, communicator, tag, reduction_comms, global_state);
             break;
           case DataType::HOROVOD_FLOAT32:
-            FusedAllreduce(entries, (float*)grad_buffer, (float*)recv_buffer, data_type, tensor_counts, start_level, communicator, tag, reduction_comms, global_state);
+            FusedAllreduce(entries, (float*)grad_buffer, (float*)recv_buffer, data_type, tensor_counts, ranks_per_tensor, communicator, tag, reduction_comms, global_state);
             break;
           case DataType::HOROVOD_FLOAT64:
-            FusedAllreduce(entries, (double*)grad_buffer, (double*)recv_buffer, data_type, tensor_counts, start_level, communicator, tag, reduction_comms, global_state);
+            FusedAllreduce(entries, (double*)grad_buffer, (double*)recv_buffer, data_type, tensor_counts, ranks_per_tensor, communicator, tag, reduction_comms, global_state);
             break;
           default:
             throw std::logic_error("Unsupported data type");
