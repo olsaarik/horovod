@@ -439,6 +439,7 @@ def DistributedOptimizer(optimizer, name=None, use_locking=False, device_dense='
     """
     if isinstance(optimizer, _LegacyOptimizer):
         if op == Adasum:
+            print("Using _DistributedAdasumOptimizer", flush=True)
             return _DistributedAdasumOptimizer(optimizer, name, use_locking, device_dense,
                                             device_sparse, compression, sparse_as_dense,
                                             backward_passes_per_step)
