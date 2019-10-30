@@ -1436,15 +1436,16 @@ require_list = ['cloudpickle', 'psutil', 'pyyaml', 'six']
 if not os.environ.get('HOROVOD_WITHOUT_PYTORCH'):
     require_list.append('cffi>=1.4.0')
 
-setup(name='horovod',
+setup(name='horovod-adasum',
       version=__version__,
       packages=find_packages(),
-      description='Distributed training framework for TensorFlow, Keras, PyTorch, and Apache MXNet.',
+      description='Horovod with Adasum for highly scalable distributed training.',
       author='The Horovod Authors',
       long_description=textwrap.dedent('''\
           Horovod is a distributed training framework for TensorFlow, Keras, PyTorch, and Apache MXNet.
-          The goal of Horovod is to make distributed Deep Learning fast and easy to use.'''),
-      url='https://github.com/horovod/horovod',
+          The goal of Horovod is to make distributed Deep Learning fast and easy to use.
+          This version includes the highly scalable Adasum reduction algorithm.'''),
+      url='https://www.microsoft.com/en-us/research/project/parasail/',
       classifiers=[
           'License :: OSI Approved :: Apache Software License'
       ],
