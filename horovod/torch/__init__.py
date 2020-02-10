@@ -380,7 +380,7 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
             p.data.copy_(start)
             self._allreduce_delay[p] = self.backward_passes_per_step
 
-            a = hvd.synchronize(normsq_handle).item()
+            a = synchronize(normsq_handle).item()
             if rank() == 0:
                 a = 1 if a == 0 else math.sqrt(a)
                 print("shadow", index, delta.norm(p=2).item() / a, a, flush=True)
