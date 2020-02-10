@@ -22,6 +22,7 @@ from contextlib import contextmanager
 
 import io
 import warnings
+import math
 
 import cloudpickle
 
