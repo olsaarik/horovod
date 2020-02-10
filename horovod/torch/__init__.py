@@ -324,7 +324,7 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
         
         # allreduce as before
         tensor_compressed, ctx = self._compression.compress(p)
-        handle = allreduce_async_(tensor_compressed.data, name=name, op=Adasum)
+        handle = allreduce_async_(tensor_compressed.data, name='all%s'%name, op=Adasum)
         normsq_handle = allreduce_async_(norm_sq,name='nsq%s'%name, op=Sum)
 
         # reset stashed parameters
@@ -375,16 +375,15 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
                 handle, normsq_handle, ctx = self._allreduce_grad_async(p)
                 self._handles[p] = (handle, normsq_handle, ctx)
             delta = synchronize(handle)
-            delta = self._compression.decompress(delta, ctx)            
+            delta = self._compression.decompress(delta, ctx)
+            a = synchronize(normsq_handle).item()
+            if rank() == 0:
+                a = 1 if a == 0 else math.sqrt(a)
+                print("shadow", index, delta.norm(p=2).item() / a, a, flush=True) 
             start = self._starting_models[p]
             start.data.add_(delta.data)
             p.data.copy_(start)
             self._allreduce_delay[p] = self.backward_passes_per_step
-
-            a = synchronize(normsq_handle).item()
-            if rank() == 0:
-                a = 1 if a == 0 else math.sqrt(a)
-                print("shadow", index, delta.norm(p=2).item() / a, a, flush=True)
         self._handles.clear()
         return loss
 
