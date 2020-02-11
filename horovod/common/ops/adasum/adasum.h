@@ -358,7 +358,7 @@ private:
 
     // Grad shadow
     std::vector<double> normSquaredsAfter(tensor_counts.size());
-    int countSoFar = 0;
+    countSoFar = 0;
     for (size_t i = 0; i < tensor_counts.size(); i++) {
       double ignoreA = 0.;
       double ignoreB = 0.;
