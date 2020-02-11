@@ -376,7 +376,7 @@ private:
     if (rank == 0) {
       for (size_t i = 0; i < tensor_counts.size(); i++) {
         double a = normSquareds[i];
-        a = a == 0 ? a = 1 : sqrt(a);
+        a = a == 0 ? 1 : sqrt(a);
         printf("shadow %s %f %f\n",
           entries[i].tensor_name.c_str(),
           sqrt(normSquaredsAfter[i]) / a,
