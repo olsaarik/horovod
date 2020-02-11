@@ -239,9 +239,11 @@ private:
       total_counts_sum += tensor_counts[i];
     int myCount = total_counts_sum;
     int comm_index;
+    int local_comm_index = -1;
     for (level = 1, comm_index = 0; level < size;
          level = (level << 1), comm_index++) {
       if (level < start_level) {
+        local_comm_index = comm_index;
         continue;
       }
 
@@ -354,23 +356,31 @@ private:
     }
     size = orgSize;
 
+    // Grad shadow
+    std::vector<double> normSquaredsAfter(tensor_counts.size());
+    int countSoFar = 0;
+    for (size_t i = 0; i < tensor_counts.size(); i++) {
+      double ignoreA = 0.;
+      double ignoreB = 0.;
 
+      DispatchComputeDotAndNormSqrds(&grad_buffer[countSoFar], &grad_buffer[countSoFar],
+                                    horovod_datatype, tensor_counts[i],
+                                    normSquaredsAfter[i], ignoreA, ignoreB, 0);
+      countSoFar += tensor_counts[i];
+    }
+    if (local_comm_index >= 0) {
+      SumAllreduceWithComm(entries, (void*)normSquaredsAfter.data(),
+                        tensor_counts.size(), DataType::HOROVOD_FLOAT64,
+                        reduction_comms[local_comm_index], global_state);
+    }
     if (rank == 0) {
-      // Grad shadow
-      int countSoFar = 0;
       for (size_t i = 0; i < tensor_counts.size(); i++) {
-        double A = 0.;
-        double ignoreA = 0.;
-        double ignoreB = 0.;
-
-        DispatchComputeDotAndNormSqrds(&grad_buffer[countSoFar], &grad_buffer[countSoFar],
-                                      horovod_datatype, tensor_counts[i],
-                                      A, ignoreA, ignoreB, 0);
-        countSoFar += tensor_counts[i];
-
         double a = normSquareds[i];
         a = a == 0 ? a = 1 : sqrt(a);
-        printf("shadow %s %f %f\n", entries[i].tensor_name.c_str(), sqrt(A) / a, a);
+        printf("shadow %s %f %f\n",
+          entries[i].tensor_name.c_str(),
+          sqrt(normSquaredsAfter[i]) / a,
+          a);
         fflush(stdout);
       }
     }
