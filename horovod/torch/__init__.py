@@ -262,6 +262,7 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
         self._requires_update = set()
         self._synchronized = False
         self._should_synchronize = True
+        self._indices = {}
 
         self._starting_models = {
             p : torch.zeros_like(p, requires_grad=False)
@@ -276,9 +277,12 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
             self._allreduce_delay[p] = self.backward_passes_per_step
 
     def _register_hooks(self):
+        index = 0
         for param_group in self.param_groups:
             for p in param_group['params']:
                 if p.requires_grad:
+                    self._indices[p] = index
+                    index += 1
                     p.grad = p.data.new(p.size()).zero_()
                     self._requires_update.add(p)
                     p_tmp = p.expand_as(p)
@@ -320,18 +324,16 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
 
         # compute delta = curr - start
         p.data.sub_(start)
-        norm_sq = p.data.norm(p=2,dtype=torch.float32)**2
         
         # allreduce as before
         tensor_compressed, ctx = self._compression.compress(p)
-        handle = allreduce_async_(tensor_compressed.data, name='all%s'%name, op=Adasum)
-        normsq_handle = allreduce_async_(norm_sq,name='nsq%s'%name, op=Sum)
+        handle = allreduce_async_(tensor_compressed.data, name='%ilayer%s'%(self._indices,name), op=Adasum)
 
         # reset stashed parameters
         for stashed, group in zip(stashed_params, self.param_groups):
             group['params'] = stashed        
 
-        return handle, normsq_handle, ctx
+        return handle, ctx
 
     def _make_hook(self, p):
         def hook(*ignore):
@@ -344,11 +346,11 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
                         "accumulate gradients locally.")
             assert not p.grad.requires_grad
             assert self._allreduce_delay[p] > 0
-            handle, normsq_handle, ctx = None, None, None
+            handle, ctx = None, None, None
             self._allreduce_delay[p] -= 1
             if self._allreduce_delay[p] == 0:
-                handle, normsq_handle, ctx = self._allreduce_grad_async(p)
-            self._handles[p] = (handle, normsq_handle, ctx)
+                handle, ctx = self._allreduce_grad_async(p)
+            self._handles[p] = (handle, ctx)
         return hook
 
     def synchronize(self):
@@ -365,21 +367,17 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
 
         missing_p = self._requires_update - set(self._handles.keys())
         for p in missing_p:
-            handle, normsq_handle, ctx = self._allreduce_grad_async(p)
-            self._handles[p] = (handle, normsq_handle, ctx)
+            handle, ctx = self._allreduce_grad_async(p)
+            self._handles[p] = (handle, ctx)
 
-        for index, (p, (handle, normsq_handle, ctx)) in enumerate(self._handles.items()):
+        for index, (p, (handle, ctx)) in enumerate(self._handles.items()):
             # This means step() is called before backward_passes_per_steps finished.
             # We do a synchoronous allreduce here.
             if not handle:
-                handle, normsq_handle, ctx = self._allreduce_grad_async(p)
-                self._handles[p] = (handle, normsq_handle, ctx)
+                handle, ctx = self._allreduce_grad_async(p)
+                self._handles[p] = (handle, ctx)
             delta = synchronize(handle)
             delta = self._compression.decompress(delta, ctx)
-            a = synchronize(normsq_handle).item()
-            if rank() == 0:
-                a = 1 if a == 0 else math.sqrt(a)
-                print("shadow", index, delta.norm(p=2).item() / a, a, flush=True) 
             start = self._starting_models[p]
             start.data.add_(delta.data)
             p.data.copy_(start)

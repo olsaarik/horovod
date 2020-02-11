@@ -18,6 +18,8 @@
 
 #include <cstring>
 #include <float.h>
+#include <stdio.h>
+#include <math.h>
 
 #if __AVX__ && __F16C__
 #include <emmintrin.h>
@@ -206,6 +208,22 @@ private:
     std::vector<std::vector<int>> nghrCountVec;
     std::vector<double> normAndDots(tensor_counts.size() * 3 * 2);
 
+    // Grad shadow
+    int countSoFar = 0;
+    std::vector<double> normSquareds(tensor_counts.size());
+    for (size_t i = 0; i < tensor_counts.size(); i++) {
+      double ignoreA = 0.;
+      double ignoreB = 0.;
+
+      DispatchComputeDotAndNormSqrds(&grad_buffer[countSoFar], &grad_buffer[countSoFar],
+                                     horovod_datatype, tensor_counts[i],
+                                     normSquareds[i], ignoreA, ignoreB, 0);
+      countSoFar += tensor_counts[i];
+    }
+    SumAllreduceWithComm(entries, (void*)normSquareds.data(),
+                      tensor_counts.size(), DataType::HOROVOD_FLOAT64,
+                      communicator, global_state);
+
     int nearest_power_2 = 1;
     for (nearest_power_2 = 1; (nearest_power_2 << 1) <= size;
          nearest_power_2 = (nearest_power_2 << 1)) {
@@ -335,6 +353,27 @@ private:
       myCount += nghrCount;
     }
     size = orgSize;
+
+
+    if (rank == 0) {
+      // Grad shadow
+      int countSoFar = 0;
+      for (size_t i = 0; i < tensor_counts.size(); i++) {
+        double A = 0.;
+        double ignoreA = 0.;
+        double ignoreB = 0.;
+
+        DispatchComputeDotAndNormSqrds(&grad_buffer[countSoFar], &grad_buffer[countSoFar],
+                                      horovod_datatype, tensor_counts[i],
+                                      A, ignoreA, ignoreB, 0);
+        countSoFar += tensor_counts[i];
+
+        double a = normSquareds[i];
+        a = a == 0 ? a = 1 : sqrt(a);
+        printf("shadow %s %f %f\n", entries[i].tensor_name.c_str(), sqrt(A) / a, a);
+        fflush(stdout);
+      }
+    }
   }
 
   void FusedPairwiseReduceWithComm(std::vector<TensorTableEntry>& entries,
