@@ -346,7 +346,7 @@ class _DistributedAdasumOptimizer(torch.optim.Optimizer):
                         "accumulate gradients locally.")
             assert not p.grad.requires_grad
             assert self._allreduce_delay[p] > 0
-            handle, ctx = None, None, None
+            handle, ctx = None, None
             self._allreduce_delay[p] -= 1
             if self._allreduce_delay[p] == 0:
                 handle, ctx = self._allreduce_grad_async(p)
